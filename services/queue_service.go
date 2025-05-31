@@ -16,21 +16,31 @@ import (
 )
 
 type QueueService struct {
-	Redis  *redis.Client
-	PubNub *pubnub.PubNub
-	Config *config.Config
+	Redis        *redis.Client
+	PubNub       *pubnub.PubNub
+	Config       *config.Config
+	timeoutMap   map[string]*time.Timer // Track active timeouts
+	timeoutMutex sync.RWMutex           // Protect timeout map
+	stopChan     chan struct{}
 }
 
 func NewQueueService(redisClient *redis.Client, pn *pubnub.PubNub, cfg *config.Config) *QueueService {
-	return &QueueService{
-		Redis:  redisClient,
-		PubNub: pn,
-		Config: cfg,
+	service := &QueueService{
+		Redis:      redisClient,
+		PubNub:     pn,
+		Config:     cfg,
+		timeoutMap: make(map[string]*time.Timer),
+		stopChan:   make(chan struct{}),
 	}
+
+	// Start the centralized timeout manager
+	go service.timeoutManager()
+
+	return service
 }
 
 // UpdateQueuePositions - Improved version with batch updates and optimizations
-func (s *QueueService) UpdateQueuePositions(ctx context.Context) {
+func (s *QueueService) UpdateQueuePositions2(ctx context.Context) {
 	ticker := time.NewTicker(s.Config.QueuePositionUpdate)
 	defer ticker.Stop()
 
@@ -170,7 +180,7 @@ func (s *QueueService) updateQueueMetrics(ctx context.Context, eventID string, q
 }
 
 // EnqueueUser - Enhanced version that adds event to active set
-func (s *QueueService) EnqueueUser(ctx context.Context, eventID, userID, sessionID string) error {
+func (s *QueueService) EnqueueUser2(ctx context.Context, eventID, userID, sessionID string) error {
 	entry := models.QueueEntry{
 		UserID:    userID,
 		EventID:   eventID,
@@ -300,7 +310,7 @@ func (s *QueueService) performQueueCleanup(ctx context.Context) {
 }
 
 // ProcessQueue - Enhanced version from the original
-func (s *QueueService) ProcessQueue(ctx context.Context, eventID string) {
+func (s *QueueService) ProcessQueue2(ctx context.Context, eventID string) {
 	processingKey := fmt.Sprintf("queue:processing:%s", eventID)
 	waitingKey := fmt.Sprintf("queue:waiting:%s", eventID)
 
@@ -378,7 +388,7 @@ func (s *QueueService) ProcessQueue(ctx context.Context, eventID string) {
 // Additional helper methods remain the same as in the original implementation...
 // (setProcessingTimeout, RemoveFromProcessing, etc.)
 
-func (s *QueueService) RemoveFromProcessing(ctx context.Context, eventID, userID string) error {
+func (s *QueueService) RemoveFromProcessing2(ctx context.Context, eventID, userID string) error {
 	processingKey := fmt.Sprintf("queue:processing:%s", eventID)
 
 	members, err := s.Redis.SMembers(ctx, processingKey).Result()
@@ -433,4 +443,377 @@ func (s *QueueService) setProcessingTimeout(ctx context.Context, eventID, userID
 	// todo: remove this line
 	s.RemoveFromProcessing(ctx, eventID, userID)
 	go s.ProcessQueue(ctx, eventID)
+}
+
+// ---------------------
+
+// Centralized timeout manager - only ONE goroutine for all timeouts
+func (s *QueueService) timeoutManager() {
+	ticker := time.NewTicker(10 * time.Second) // Check every 10 seconds
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			s.checkProcessingTimeouts()
+		case <-s.stopChan:
+			return
+		}
+	}
+}
+
+// Check for processing timeouts across all events
+func (s *QueueService) checkProcessingTimeouts() {
+	ctx := context.Background()
+
+	// Get all processing queues
+	keys, err := s.Redis.Keys(ctx, "queue:processing:*").Result()
+	if err != nil {
+		log.Printf("Error getting processing keys: %v", err)
+		return
+	}
+
+	for _, key := range keys {
+		eventID := key[len("queue:processing:"):]
+
+		// Get all processing users
+		members, err := s.Redis.SMembers(ctx, key).Result()
+		if err != nil {
+			continue
+		}
+
+		for _, member := range members {
+			var user models.ProcessingUser
+			if err := json.Unmarshal([]byte(member), &user); err != nil {
+				continue
+			}
+
+			// Check if timeout exceeded
+			if time.Since(user.StartedAt) > s.Config.SeatLockTimeout {
+				log.Printf("Timeout detected for user %s in event %s", user.UserID, eventID)
+				s.RemoveFromProcessing(ctx, eventID, user.UserID)
+				go s.ProcessQueue(ctx, eventID) // Process next in queue
+			}
+		}
+	}
+}
+
+// Add user to waiting queue
+func (s *QueueService) EnqueueUser(ctx context.Context, eventID, userID, sessionID string) error {
+	entry := models.QueueEntry{
+		UserID:    userID,
+		EventID:   eventID,
+		JoinedAt:  time.Now(),
+		Status:    "waiting",
+		SessionID: sessionID,
+	}
+
+	data, err := json.Marshal(entry)
+	if err != nil {
+		return err
+	}
+
+	queueKey := fmt.Sprintf("queue:waiting:%s", eventID)
+
+	// Use a Redis transaction to check and add atomically
+	pipe := s.Redis.TxPipeline()
+
+	// Check queue length
+	_ = pipe.LLen(ctx, queueKey)
+
+	// Add to queue
+	pipe.LPush(ctx, queueKey, data)
+
+	// Store user queue status
+	userKey := fmt.Sprintf("user:queue:%s:%s", eventID, userID)
+	pipe.HSet(ctx, userKey, map[string]any{
+		"status":     "waiting",
+		"joined_at":  time.Now().Unix(),
+		"session_id": sessionID,
+	})
+
+	// Execute transaction
+	results, err := pipe.Exec(ctx)
+	if err != nil {
+		return err
+	}
+
+	queueLen := results[0].(*redis.IntCmd).Val()
+
+	// If queue was empty before adding, trigger processing
+	if queueLen == 0 {
+		log.Printf("Queue was empty, triggering processing for event %s", eventID)
+		go s.ProcessQueue(ctx, eventID)
+	}
+
+	return nil
+}
+
+// Process queue - move users from waiting to processing
+func (s *QueueService) ProcessQueue(ctx context.Context, eventID string) {
+	processingKey := fmt.Sprintf("queue:processing:%s", eventID)
+	waitingKey := fmt.Sprintf("queue:waiting:%s", eventID)
+
+	// Use a loop to process multiple users if slots are available
+	for {
+		// Check current processing count
+		processingCount, err := s.Redis.SCard(ctx, processingKey).Result()
+		if err != nil {
+			log.Printf("Error getting processing count: %v", err)
+			break
+		}
+
+		// Check if we can add more users to processing
+		if processingCount >= int64(s.Config.MaxProcessingUsers) {
+			log.Printf("Processing queue full for event %s (%d/%d)", eventID, processingCount, s.Config.MaxProcessingUsers)
+			break
+		}
+
+		// Get next user from waiting queue (RPOP for FIFO)
+		data, err := s.Redis.RPop(ctx, waitingKey).Result()
+		if err == redis.Nil {
+			// Queue is empty
+			log.Printf("No more users in waiting queue for event %s", eventID)
+			break
+		} else if err != nil {
+			log.Printf("Error popping from queue: %v", err)
+			break
+		}
+
+		var entry models.QueueEntry
+		if err := json.Unmarshal([]byte(data), &entry); err != nil {
+			log.Printf("Error unmarshaling queue entry: %v", err)
+			continue
+		}
+
+		// Check if user session is still valid
+		userKey := fmt.Sprintf("user:queue:%s:%s", eventID, entry.UserID)
+		storedSessionID, err := s.Redis.HGet(ctx, userKey, "session_id").Result()
+		if err != nil || storedSessionID != entry.SessionID {
+			log.Printf("Invalid session for user %s, skipping", entry.UserID)
+			continue
+		}
+
+		// Move to processing
+		processingUser := models.ProcessingUser{
+			UserID:    entry.UserID,
+			EventID:   entry.EventID,
+			StartedAt: time.Now(),
+			SessionID: entry.SessionID,
+		}
+
+		processingData, _ := json.Marshal(processingUser)
+		err = s.Redis.SAdd(ctx, processingKey, processingData).Err()
+		if err != nil {
+			log.Printf("Error adding user to processing: %v", err)
+			// Put user back to front of waiting queue
+			s.Redis.RPush(ctx, waitingKey, data)
+			continue
+		}
+
+		// Update user status
+		s.Redis.HSet(ctx, userKey, "status", "processing")
+
+		// Notify user via PubNub
+		channel := fmt.Sprintf("user-%s", entry.UserID)
+		s.PubNub.Publish().
+			Channel(channel).
+			Message(map[string]any{
+				"type":     "queue_status",
+				"status":   "processing",
+				"event_id": eventID,
+				"message":  "You can now select your seats!",
+			}).
+			Execute()
+
+		log.Printf("User %s moved to processing for event %s", entry.UserID, eventID)
+	}
+}
+
+// Remove user from processing
+func (s *QueueService) RemoveFromProcessing(ctx context.Context, eventID, userID string) error {
+	processingKey := fmt.Sprintf("queue:processing:%s", eventID)
+
+	// Get all processing entries
+	members, err := s.Redis.SMembers(ctx, processingKey).Result()
+	if err != nil {
+		return err
+	}
+
+	// Find and remove the user
+	for _, member := range members {
+		var user models.ProcessingUser
+		if err := json.Unmarshal([]byte(member), &user); err != nil {
+			continue
+		}
+
+		if user.UserID == userID {
+			// Remove from processing set
+			s.Redis.SRem(ctx, processingKey, member)
+
+			// Release locked seats
+			seatService := NewSeatService(s.Redis)
+			for _, seatID := range user.LockedSeats {
+				seatService.UnlockSeat(ctx, eventID, seatID)
+			}
+
+			// Clean up user status
+			userKey := fmt.Sprintf("user:queue:%s:%s", eventID, userID)
+			s.Redis.Del(ctx, userKey)
+
+			// Notify user they were timed out
+			channel := fmt.Sprintf("user-%s", userID)
+			s.PubNub.Publish().
+				Channel(channel).
+				Message(map[string]any{
+					"type":     "processing_timeout",
+					"event_id": eventID,
+					"message":  "Your session has timed out. Please rejoin the queue.",
+				}).
+				Execute()
+
+			log.Printf("User %s removed from processing for event %s", userID, eventID)
+			break
+		}
+	}
+
+	return nil
+}
+
+// Update queue positions - runs as background task
+func (s *QueueService) UpdateQueuePositions(ctx context.Context) {
+	ticker := time.NewTicker(s.Config.QueuePositionUpdate)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			s.updatePositions(ctx)
+		case <-s.stopChan:
+			return
+		}
+	}
+}
+
+func (s *QueueService) updatePositions(ctx context.Context) {
+	// Get all event queues
+	keys, err := s.Redis.Keys(ctx, "queue:waiting:*").Result()
+	if err != nil {
+		log.Printf("Error getting queue keys: %v", err)
+		return
+	}
+
+	for _, key := range keys {
+		eventID := key[len("queue:waiting:"):]
+
+		// Get all queue entries (FIFO order)
+		entries, err := s.Redis.LRange(ctx, key, 0, -1).Result()
+		if err != nil {
+			continue
+		}
+
+		// Update positions and notify users
+		for i, entryData := range entries {
+			var entry models.QueueEntry
+			if err := json.Unmarshal([]byte(entryData), &entry); err != nil {
+				continue
+			}
+
+			// Position is from the end (FIFO)
+			position := len(entries) - i
+
+			// Store position in Redis with TTL
+			posKey := fmt.Sprintf("queue:position:%s:%s", eventID, entry.UserID)
+			s.Redis.Set(ctx, posKey, position, 10*time.Second)
+
+			// Only notify if position changed significantly or periodically
+			if position <= 50 || position%10 == 0 {
+				channel := fmt.Sprintf("user-%s", entry.UserID)
+				s.PubNub.Publish().
+					Channel(channel).
+					Message(map[string]any{
+						"type":     "queue_position",
+						"position": position,
+						"event_id": eventID,
+						"message":  fmt.Sprintf("You are #%d in line", position),
+					}).
+					Execute()
+			}
+		}
+	}
+}
+
+// Get user's current queue status
+func (s *QueueService) GetUserQueueStatus(ctx context.Context, eventID, userID string) (map[string]any, error) {
+	userKey := fmt.Sprintf("user:queue:%s:%s", eventID, userID)
+
+	status, err := s.Redis.HGetAll(ctx, userKey).Result()
+	if err != nil {
+		return nil, err
+	}
+
+	if len(status) == 0 {
+		return map[string]any{
+			"status": "not_in_queue",
+		}, nil
+	}
+
+	result := map[string]any{
+		"status":     status["status"],
+		"session_id": status["session_id"],
+	}
+
+	// Get position if waiting
+	if status["status"] == "waiting" {
+		posKey := fmt.Sprintf("queue:position:%s:%s", eventID, userID)
+		position, err := s.Redis.Get(ctx, posKey).Int()
+		if err == nil {
+			result["position"] = position
+		}
+	}
+
+	return result, nil
+}
+
+// Graceful shutdown
+func (s *QueueService) Shutdown() {
+	close(s.stopChan)
+
+	// Cancel all active timeouts
+	s.timeoutMutex.Lock()
+	for key, timer := range s.timeoutMap {
+		timer.Stop()
+		delete(s.timeoutMap, key)
+	}
+	s.timeoutMutex.Unlock()
+}
+
+// Health check for queue service
+func (s *QueueService) HealthCheck(ctx context.Context) map[string]any {
+	stats := map[string]any{
+		"service": "queue",
+		"status":  "healthy",
+	}
+
+	// Get queue statistics
+	keys, _ := s.Redis.Keys(ctx, "queue:waiting:*").Result()
+	totalWaiting := 0
+	totalProcessing := 0
+
+	for _, key := range keys {
+		eventID := key[len("queue:waiting:"):]
+
+		waiting, _ := s.Redis.LLen(ctx, key).Result()
+		totalWaiting += int(waiting)
+
+		processingKey := fmt.Sprintf("queue:processing:%s", eventID)
+		processing, _ := s.Redis.SCard(ctx, processingKey).Result()
+		totalProcessing += int(processing)
+	}
+
+	stats["active_events"] = len(keys)
+	stats["total_waiting"] = totalWaiting
+	stats["total_processing"] = totalProcessing
+
+	return stats
 }
