@@ -12,15 +12,15 @@ import (
 )
 
 type PaymentService struct {
-	redis  *redis.Client
-	pubnub *pubnub.PubNub
+	Redis  *redis.Client
+	PubNub *pubnub.PubNub
 	queue  *QueueService
 }
 
 func NewPaymentService(redisClient *redis.Client, pn *pubnub.PubNub, queueService *QueueService) *PaymentService {
 	service := &PaymentService{
-		redis:  redisClient,
-		pubnub: pn,
+		Redis:  redisClient,
+		PubNub: pn,
 		queue:  queueService,
 	}
 
@@ -44,11 +44,11 @@ func (s *PaymentService) CreatePaymentSession(ctx context.Context, userID, event
 
 	paymentKey := fmt.Sprintf("payment:%s", paymentID)
 	for k, v := range paymentData {
-		s.redis.HSet(ctx, paymentKey, k, v)
+		s.Redis.HSet(ctx, paymentKey, k, v)
 	}
 
 	// todo: use constance timeout, if timeout then unlock seat
-	s.redis.Expire(ctx, paymentKey, 5*time.Minute)
+	s.Redis.Expire(ctx, paymentKey, 5*time.Minute)
 
 	return paymentID, nil
 }
@@ -56,8 +56,8 @@ func (s *PaymentService) CreatePaymentSession(ctx context.Context, userID, event
 func (s *PaymentService) SubscribeToPaymentNotifications() {
 	listener := pubnub.NewListener()
 
-	s.pubnub.AddListener(listener)
-	s.pubnub.Subscribe().
+	s.PubNub.AddListener(listener)
+	s.PubNub.Subscribe().
 		Channels([]string{"bank-payment-notifications"}).
 		Execute()
 
@@ -90,7 +90,7 @@ func (s *PaymentService) handlePaymentNotification(message *pubnub.PNMessage) {
 
 	if notification.Status == "success" {
 		paymentKey := fmt.Sprintf("payment:%s", notification.PaymentID)
-		paymentData := s.redis.HGetAll(ctx, paymentKey).Val()
+		paymentData := s.Redis.HGetAll(ctx, paymentKey).Val()
 
 		userID := paymentData["user_id"]
 		eventID := paymentData["event_id"]
@@ -100,13 +100,13 @@ func (s *PaymentService) handlePaymentNotification(message *pubnub.PNMessage) {
 		json.Unmarshal([]byte(seatsJSON), &seats)
 
 		// todo: use share seatService instance
-		seatService := NewSeatService(s.redis)
+		seatService := NewSeatService(s.Redis)
 		for _, seatID := range seats {
 			seatService.MarkSeatAsSold(ctx, eventID, seatID, userID)
 			// todo: update seat status in sql
 		}
 
-		s.redis.HSet(ctx, paymentKey, "status", "completed")
+		s.Redis.HSet(ctx, paymentKey, "status", "completed")
 		// todo: update payment status in sql
 
 		s.queue.RemoveFromProcessing(ctx, eventID, userID)
@@ -115,7 +115,7 @@ func (s *PaymentService) handlePaymentNotification(message *pubnub.PNMessage) {
 		go s.queue.ProcessQueue(ctx, eventID)
 
 		channel := fmt.Sprintf("user-%s", userID)
-		s.pubnub.Publish().
+		s.PubNub.Publish().
 			Channel(channel).
 			Message(map[string]any{
 				"type":       "payment_success",
