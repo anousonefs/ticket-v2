@@ -118,6 +118,7 @@ func (s *QueueService) ProcessQueue(ctx context.Context, eventID string) {
 			}).
 			Execute()
 
+		// todo: fix handle many goroutine, what about go context
 		go s.setProcessingTimeout(ctx, eventID, entry.UserID)
 	}
 }
@@ -127,10 +128,21 @@ func (s *QueueService) setProcessingTimeout(ctx context.Context, eventID, userID
 
 	userKey := fmt.Sprintf("user:queue:%s:%s", eventID, userID)
 	status, err := s.Redis.HGet(ctx, userKey, "status").Result()
+	// todo: check seat status
 	if err != nil || status != "processing" {
+		// s.RemoveFromProcessing(ctx, eventID, userID)
+		// go s.ProcessQueue(ctx, eventID)
 		return
 	}
 
+	// time.Sleep(s.config.PaymentTimeout)
+	// if err == nil || status != "payment_success" {
+	// s.RemoveFromProcessing(ctx, eventID, userID)
+	// go s.ProcessQueue(ctx, eventID)
+	// return
+	// }
+
+	// todo: remove this line
 	s.RemoveFromProcessing(ctx, eventID, userID)
 	go s.ProcessQueue(ctx, eventID)
 }
@@ -152,6 +164,7 @@ func (s *QueueService) RemoveFromProcessing(ctx context.Context, eventID, userID
 		if user.UserID == userID {
 			s.Redis.SRem(ctx, processingKey, member)
 
+			// todo: use share seatService instance
 			seatService := NewSeatService(s.Redis)
 			for _, seatID := range user.LockedSeats {
 				seatService.UnlockSeat(ctx, eventID, seatID)
@@ -178,8 +191,10 @@ func (s *QueueService) UpdateQueuePositions(ctx context.Context) {
 			continue
 		}
 
+		fmt.Printf("---------- keys: %+v ----------------------\n", keys)
 		for _, key := range keys {
 			eventID := key[len("queue:waiting:"):]
+			fmt.Printf("=> UpdateQueuePositions eventID: %v, key: %v\n", eventID, key)
 
 			entries, err := s.Redis.LRange(ctx, key, 0, -1).Result()
 			if err != nil {
@@ -192,6 +207,7 @@ func (s *QueueService) UpdateQueuePositions(ctx context.Context) {
 					continue
 				}
 
+				// todo: position should be i + 1
 				position := len(entries) - i
 
 				posKey := fmt.Sprintf("queue:position:%s:%s", eventID, entry.UserID)

@@ -66,7 +66,7 @@ func (h *QueueHandler) GetQueuePosition(c echo.Context) error {
 	userKey := fmt.Sprintf("user:queue:%s:%s", eventID, authRecord.Id)
 	status, _ := h.queueService.Redis.HGet(c.Request().Context(), userKey, "status").Result()
 
-	return c.JSON(http.StatusOK, map[string]interface{}{
+	return c.JSON(http.StatusOK, map[string]any{
 		"position": position,
 		"status":   status,
 	})

@@ -47,7 +47,8 @@ func (s *PaymentService) CreatePaymentSession(ctx context.Context, userID, event
 		s.redis.HSet(ctx, paymentKey, k, v)
 	}
 
-	s.redis.Expire(ctx, paymentKey, 10*time.Minute)
+	// todo: use constance timeout, if timeout then unlock seat
+	s.redis.Expire(ctx, paymentKey, 5*time.Minute)
 
 	return paymentID, nil
 }
@@ -74,7 +75,7 @@ func (s *PaymentService) handlePaymentNotification(message *pubnub.PNMessage) {
 		Status    string `json:"status"`
 	}
 
-	data, ok := message.Message.(map[string]interface{})
+	data, ok := message.Message.(map[string]any)
 	if !ok {
 		return
 	}
@@ -98,21 +99,25 @@ func (s *PaymentService) handlePaymentNotification(message *pubnub.PNMessage) {
 		var seats []string
 		json.Unmarshal([]byte(seatsJSON), &seats)
 
+		// todo: use share seatService instance
 		seatService := NewSeatService(s.redis)
 		for _, seatID := range seats {
 			seatService.MarkSeatAsSold(ctx, eventID, seatID, userID)
+			// todo: update seat status in sql
 		}
 
 		s.redis.HSet(ctx, paymentKey, "status", "completed")
+		// todo: update payment status in sql
 
 		s.queue.RemoveFromProcessing(ctx, eventID, userID)
 
+		// todo: check go context
 		go s.queue.ProcessQueue(ctx, eventID)
 
 		channel := fmt.Sprintf("user-%s", userID)
 		s.pubnub.Publish().
 			Channel(channel).
-			Message(map[string]interface{}{
+			Message(map[string]any{
 				"type":       "payment_success",
 				"payment_id": notification.PaymentID,
 				"seats":      seats,
