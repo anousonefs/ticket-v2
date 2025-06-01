@@ -17,13 +17,164 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v5"
-	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/plugins/migratecmd"
 	pubnub "github.com/pubnub/go"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/pocketbase/pocketbase" // Import the main PocketBase app
+	// Alias 'm'
+	// Alias for clarity, or just 'models'
+	// For schema definitions
+	// For types.Pointer
+	// For daos.Dao if needed, but app.Dao() is common
 )
 
+//	func init() {
+//		// Events collection
+//		// The migration functions now receive 'app *pocketbase.PocketBase'
+//		migrations.Register(func(app core.App) error {
+//			dao := app.Dao() // Get the DAO instance from the app
+//
+//			collection := &pbmodels.Collection{}
+//			collection.Name = "events"
+//			collection.Type = pbmodels.CollectionTypeBase
+//			collection.Schema = schema.NewSchema(
+//				&schema.SchemaField{
+//					Name:     "name",
+//					Type:     schema.FieldTypeText,
+//					Required: true,
+//				},
+//				&schema.SchemaField{
+//					Name: "description",
+//					Type: schema.FieldTypeEditor, // FieldTypeEditor implies rich text
+//				},
+//				&schema.SchemaField{
+//					Name:     "start_date",
+//					Type:     schema.FieldTypeDate, // Use FieldTypeDate for date only, or FieldTypeDateTime for date and time
+//					Required: true,
+//				},
+//				&schema.SchemaField{
+//					Name:     "venue",
+//					Type:     schema.FieldTypeText,
+//					Required: true,
+//				},
+//				&schema.SchemaField{
+//					Name: "total_seats",
+//					Type: schema.FieldTypeNumber,
+//					Options: &schema.NumberOptions{
+//						Min: types.Pointer(1.0), // Cleaner way to get a *float64
+//					},
+//				},
+//				&schema.SchemaField{
+//					Name: "max_processing_users",
+//					Type: schema.FieldTypeNumber,
+//					Options: &schema.NumberOptions{
+//						Min: types.Pointer(1.0),  // Cleaner way to get a *float64
+//						Max: types.Pointer(50.0), // Cleaner way to get a *float64
+//					},
+//				},
+//				&schema.SchemaField{
+//					Name: "status",
+//					Type: schema.FieldTypeSelect,
+//					Options: &schema.SelectOptions{
+//						Values: []string{"draft", "published", "started", "ended"},
+//						// Optional: Add other select options like `MaxSelect` or `Multiple`
+//						// MaxSelect: types.Pointer(1), // Allow only one selection
+//						// Multiple:  false,            // Not a multi-select
+//					},
+//				},
+//				&schema.SchemaField{
+//					Name: "image_url", // Added based on your previous React code
+//					Type: schema.FieldTypeFile,
+//					Options: &schema.FileOptions{
+//						MaxSelect: 10,      // Allow up to 10 images
+//						MaxSize:   5242880, // Max file size in bytes (e.g., 5MB)
+//						MimeTypes: []string{"image/jpeg", "image/png", "image/gif"},
+//					},
+//				},
+//			)
+//
+//			return dao.SaveCollection(collection)
+//		}, func(app *pocketbase.PocketBase) error {
+//			dao := app.Dao() // Get the DAO instance from the app
+//			return dao.DeleteCollection(&pbmodels.Collection{Name: "events"})
+//		})
+//
+//		// Tickets collection
+//		migrations.Register(func(app core.App) error {
+//			dao := app.Dao() // Get the DAO instance from the app
+//
+//			collection := &pbmodels.Collection{} // Use pbmodels for consistency
+//			collection.Name = "tickets"
+//			collection.Type = pbmodels.CollectionTypeBase
+//			collection.Schema = schema.NewSchema(
+//				&schema.SchemaField{
+//					Name:     "event",
+//					Type:     schema.FieldTypeRelation,
+//					Required: true,
+//					Options: &schema.RelationOptions{
+//						CollectionId:  "events", // Correctly references the 'events' collection
+//						CascadeDelete: false,    // Consider if you want tickets to be deleted when event is deleted
+//						MinSelect:     nil,
+//						MaxSelect:     types.Pointer(1), // One ticket belongs to one event
+//					},
+//				},
+//				&schema.SchemaField{
+//					Name:     "user",
+//					Type:     schema.FieldTypeRelation,
+//					Required: true,
+//					Options: &schema.RelationOptions{
+//						CollectionId:  "_pb_users_auth_", // Correctly references the built-in users collection
+//						CascadeDelete: false,
+//						MinSelect:     nil,
+//						MaxSelect:     types.Pointer(1), // One ticket belongs to one user
+//					},
+//				},
+//				&schema.SchemaField{
+//					Name:     "seat_id",
+//					Type:     schema.FieldTypeText,
+//					Required: true,
+//					// Optional: Add validation for seat_id format if needed
+//					// Validators: []validator.Validator{validator.IsRegex(`^[A-Z]\d{1,3}$`)},
+//				},
+//				&schema.SchemaField{
+//					Name: "price",
+//					Type: schema.FieldTypeNumber,
+//					Options: &schema.NumberOptions{
+//						Min: types.Pointer(0.0), // Cleaner way to get a *float64
+//					},
+//				},
+//				&schema.SchemaField{
+//					Name: "status",
+//					Type: schema.FieldTypeSelect,
+//					Options: &schema.SelectOptions{
+//						Values: []string{"locked", "sold", "cancelled"},
+//						// MaxSelect: types.Pointer(1),
+//					},
+//				},
+//				&schema.SchemaField{
+//					Name: "payment_id",
+//					Type: schema.FieldTypeText,
+//					// Optional: Add validation for payment_id format if it's a specific ID
+//				},
+//				&schema.SchemaField{
+//					Name: "qr_code",
+//					Type: schema.FieldTypeFile, // QR code is typically an image file
+//					Options: &schema.FileOptions{
+//						MaxSelect: types.Pointer(1),       // One QR code per ticket
+//						MaxSize:   types.Pointer(1048576), // Max file size (e.g., 1MB)
+//						MimeTypes: []string{"image/png", "image/jpeg"},
+//					},
+//				},
+//			)
+//
+//			return dao.SaveCollection(collection)
+//		}, func(app *pocketbase.PocketBase) error {
+//			dao := app.Dao() // Get the DAO instance from the app
+//			return dao.DeleteCollection("tickets")
+//		})
+//	}
 func main() {
 	app := pocketbase.New()
 

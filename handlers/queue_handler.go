@@ -50,7 +50,7 @@ func (h *QueueHandler) EnterQueue(c echo.Context) error {
 	}
 
 	// Add user to queue
-	err := h.queueService.EnqueueUser(c.Request().Context(), req.EventID, authRecord.Id, req.SessionID)
+	err := h.queueService.EnqueueUserAtomic(c.Request().Context(), req.EventID, authRecord.Id, req.SessionID)
 	if err != nil {
 		return apis.NewBadRequestError("Failed to join queue", err)
 	}

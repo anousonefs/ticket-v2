@@ -245,44 +245,6 @@ func (s *QueueService) performQueueCleanup(ctx context.Context) {
 	}
 }
 
-// Additional helper methods remain the same as in the original implementation...
-// (setProcessingTimeout, RemoveFromProcessing, etc.)
-
-func (s *QueueService) RemoveFromProcessing2(ctx context.Context, eventID, userID string) error {
-	processingKey := fmt.Sprintf("queue:processing:%s", eventID)
-
-	members, err := s.Redis.SMembers(ctx, processingKey).Result()
-	if err != nil {
-		return err
-	}
-
-	for _, member := range members {
-		var user models.ProcessingUser
-		if err := json.Unmarshal([]byte(member), &user); err != nil {
-			continue
-		}
-
-		if user.UserID == userID {
-			s.Redis.SRem(ctx, processingKey, member)
-
-			// todo: use share seatService instance
-			seatService := NewSeatService(s.Redis)
-			for _, seatID := range user.LockedSeats {
-				seatService.UnlockSeat(ctx, eventID, seatID)
-			}
-
-			userKey := fmt.Sprintf("user:queue:%s:%s", eventID, userID)
-			s.Redis.Del(ctx, userKey)
-
-			break
-		}
-	}
-
-	return nil
-}
-
-// ---------------------
-
 // Centralized timeout manager - only ONE goroutine for all timeouts
 func (s *QueueService) timeoutManager() {
 	ticker := time.NewTicker(10 * time.Second) // Check every 10 seconds
@@ -332,6 +294,109 @@ func (s *QueueService) checkProcessingTimeouts() {
 			}
 		}
 	}
+}
+
+const enqueueAndTriggerScript = `
+local queue_key = KEYS[1]
+local user_key = KEYS[2] 
+local processing_lock_key = KEYS[3]
+local queue_data = ARGV[1]
+local user_status = ARGV[2]
+local joined_at = ARGV[3]
+local session_id = ARGV[4]
+local user_id = ARGV[5]
+local event_id = ARGV[6]
+
+-- Check if user already exists
+if redis.call('EXISTS', user_key) == 1 then
+    return {-1, 0, 0, "user_already_exists"}
+end
+
+-- Get current queue length BEFORE adding
+local queue_len_before = redis.call('LLEN', queue_key)
+
+-- Add to queue atomically
+redis.call('LPUSH', queue_key, queue_data)
+redis.call('HSET', user_key, 
+    'status', user_status,
+    'joined_at', joined_at, 
+    'session_id', session_id,
+    'user_id', user_id,
+    'event_id', event_id
+)
+redis.call('EXPIRE', user_key, 86400)
+
+local new_queue_len = redis.call('LLEN', queue_key)
+local should_trigger_processing = 0
+
+-- Only trigger processing if queue was empty AND we can acquire lock
+if queue_len_before == 0 then
+    local lock_acquired = redis.call('SET', processing_lock_key, 'processing', 'NX', 'EX', 30)
+    if lock_acquired then
+        should_trigger_processing = 1
+    end
+end
+
+return {queue_len_before, new_queue_len, should_trigger_processing, "success"}
+`
+
+func (s *QueueService) EnqueueUserAtomic(ctx context.Context, eventID, userID, sessionID string) error {
+	entry := models.QueueEntry{
+		UserID:    userID,
+		EventID:   eventID,
+		JoinedAt:  time.Now(),
+		Status:    "waiting",
+		SessionID: sessionID,
+	}
+
+	data, err := json.Marshal(entry)
+	if err != nil {
+		return fmt.Errorf("failed to marshal entry: %w", err)
+	}
+
+	queueKey := fmt.Sprintf("queue:waiting:%s", eventID)
+	userKey := fmt.Sprintf("user:queue:%s:%s", eventID, userID)
+	lockKey := fmt.Sprintf("lock:processing:%s", eventID)
+
+	// Execute atomic script
+	result, err := s.Redis.Eval(ctx, enqueueAndTriggerScript,
+		[]string{queueKey, userKey, lockKey},
+		string(data), "waiting", time.Now().Unix(), sessionID, userID, eventID,
+	).Result()
+	if err != nil {
+		return fmt.Errorf("failed to execute enqueue script: %w", err)
+	}
+
+	resultSlice, ok := result.([]interface{})
+	if !ok || len(resultSlice) != 4 {
+		return fmt.Errorf("unexpected script result: %v", result)
+	}
+
+	queueLenBefore := resultSlice[0].(int64)
+	newQueueLen := resultSlice[1].(int64)
+	shouldTrigger := resultSlice[2].(int64)
+	status := resultSlice[3].(string)
+
+	if status != "success" {
+		return fmt.Errorf("enqueue failed: %s", status)
+	}
+
+	log.Printf("User %s enqueued atomically: before=%d, after=%d, trigger=%d",
+		userID, queueLenBefore, newQueueLen, shouldTrigger)
+
+	// Only ONE goroutine per event will have shouldTrigger=1
+	if shouldTrigger == 1 {
+		log.Printf("SINGLE ProcessQueue trigger for event %s", eventID)
+		go func() {
+			defer func() {
+				// Release lock when processing complete
+				s.Redis.Del(context.Background(), lockKey)
+			}()
+			s.ProcessQueue(context.Background(), eventID)
+		}()
+	}
+
+	return nil
 }
 
 // Add user to waiting queue
