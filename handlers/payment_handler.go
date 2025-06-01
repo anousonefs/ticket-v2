@@ -54,7 +54,7 @@ func (h *PaymentHandler) GetPaymentDetails(c echo.Context) error {
 		"reference": "%s"
 	}`, paymentID, paymentData["amount"], paymentID)
 
-	return c.JSON(http.StatusOK, map[string]interface{}{
+	return c.JSON(http.StatusOK, map[string]any{
 		"payment_id": paymentID,
 		"amount":     paymentData["amount"],
 		"seats":      paymentData["seats"],
@@ -80,7 +80,7 @@ func (h *PaymentHandler) CheckPaymentStatus(c echo.Context) error {
 		return apis.NewNotFoundError("Payment not found", nil)
 	}
 
-	return c.JSON(http.StatusOK, map[string]interface{}{
+	return c.JSON(http.StatusOK, map[string]any{
 		"status": status,
 	})
 }
@@ -126,7 +126,7 @@ func (h *PaymentHandler) CancelPayment(c echo.Context) error {
 		h.app.Dao().SaveRecord(booking)
 	}
 
-	return c.JSON(http.StatusOK, map[string]interface{}{
+	return c.JSON(http.StatusOK, map[string]any{
 		"message": "Payment cancelled",
 	})
 }
@@ -145,13 +145,13 @@ func (h *PaymentHandler) SimulatePayment(c echo.Context) error {
 	// Publish payment notification
 	h.paymentService.PubNub.Publish().
 		Channel("bank-payment-notifications").
-		Message(map[string]interface{}{
+		Message(map[string]any{
 			"payment_id": req.PaymentID,
 			"status":     req.Status,
 		}).
 		Execute()
 
-	return c.JSON(http.StatusOK, map[string]interface{}{
+	return c.JSON(http.StatusOK, map[string]any{
 		"message": "Payment simulation sent",
 	})
 }

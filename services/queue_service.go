@@ -182,19 +182,6 @@ func (s *QueueService) updateQueueMetrics(ctx context.Context, eventID string, q
 	}
 }
 
-// sendQueueJoinNotification sends an immediate notification when user joins queue
-func (s *QueueService) sendQueueJoinNotification(eventID, userID string) {
-	channel := fmt.Sprintf("user-%s", userID)
-	s.PubNub.Publish().
-		Channel(channel).
-		Message(map[string]any{
-			"type":     "queue_joined",
-			"event_id": eventID,
-			"message":  "You have successfully joined the queue",
-		}).
-		Execute()
-}
-
 // GetQueueMetrics returns current queue metrics for an event
 func (s *QueueService) GetQueueMetrics(ctx context.Context, eventID string) (map[string]any, error) {
 	metricsKey := fmt.Sprintf("queue:metrics:%s", eventID)
@@ -292,30 +279,6 @@ func (s *QueueService) RemoveFromProcessing2(ctx context.Context, eventID, userI
 	}
 
 	return nil
-}
-
-func (s *QueueService) setProcessingTimeout(ctx context.Context, eventID, userID string) {
-	time.Sleep(s.Config.SeatLockTimeout)
-
-	userKey := fmt.Sprintf("user:queue:%s:%s", eventID, userID)
-	status, err := s.Redis.HGet(ctx, userKey, "status").Result()
-	// todo: check seat status
-	if err != nil || status != "processing" {
-		// s.RemoveFromProcessing(ctx, eventID, userID)
-		// go s.ProcessQueue(ctx, eventID)
-		return
-	}
-
-	// time.Sleep(s.config.PaymentTimeout)
-	// if err == nil || status != "payment_success" {
-	// s.RemoveFromProcessing(ctx, eventID, userID)
-	// go s.ProcessQueue(ctx, eventID)
-	// return
-	// }
-
-	// todo: remove this line
-	s.RemoveFromProcessing(ctx, eventID, userID)
-	go s.ProcessQueue(ctx, eventID)
 }
 
 // ---------------------
