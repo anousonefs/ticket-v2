@@ -510,39 +510,52 @@ func (s *QueueService) EnqueueUser(ctx context.Context, eventID, userID, session
 
 	data, err := json.Marshal(entry)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to marshal queue entry: %w", err)
 	}
 
 	queueKey := fmt.Sprintf("queue:waiting:%s", eventID)
+	userKey := fmt.Sprintf("user:queue:%s:%s", eventID, userID)
 
-	// Use a Redis transaction to check and add atomically
+	// Use Redis transaction with proper command variable declarations
 	pipe := s.Redis.TxPipeline()
 
-	// Check queue length
-	_ = pipe.LLen(ctx, queueKey)
-
-	// Add to queue
-	pipe.LPush(ctx, queueKey, data)
-
-	// Store user queue status
-	userKey := fmt.Sprintf("user:queue:%s:%s", eventID, userID)
-	pipe.HSet(ctx, userKey, map[string]any{
+	// Declare variables for each pipeline command
+	queueLenCmd := pipe.LLen(ctx, queueKey)     // Get current length BEFORE adding
+	lpushCmd := pipe.LPush(ctx, queueKey, data) // Add to front of queue
+	hsetCmd := pipe.HSet(ctx, userKey, map[string]any{
 		"status":     "waiting",
 		"joined_at":  time.Now().Unix(),
 		"session_id": sessionID,
 	})
 
-	// Execute transaction
-	results, err := pipe.Exec(ctx)
+	// Execute all commands atomically
+	_, err = pipe.Exec(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to execute redis transaction: %w", err)
 	}
 
-	queueLen := results[0].(*redis.IntCmd).Val()
+	// Now safely get the results using the declared command variables
+	queueLenBefore, err := queueLenCmd.Result()
+	if err != nil {
+		return fmt.Errorf("failed to get queue length: %w", err)
+	}
+
+	newQueueLen, err := lpushCmd.Result()
+	if err != nil {
+		return fmt.Errorf("failed to get new queue length: %w", err)
+	}
+
+	hsetResult, err := hsetCmd.Result()
+	if err != nil {
+		return fmt.Errorf("failed to set user status: %w", err)
+	}
+
+	log.Printf("==> User %s enqueued for event %s: queue_len_before=%d, new_queue_len=%d, hset_result=%d",
+		userID, eventID, queueLenBefore, newQueueLen, hsetResult)
 
 	// If queue was empty before adding, trigger processing
-	if queueLen == 0 {
-		log.Printf("Queue was empty, triggering processing for event %s", eventID)
+	if queueLenBefore == 0 {
+		log.Printf("==> Queue was empty, triggering processing for event %s", eventID)
 		go s.ProcessQueue(ctx, eventID)
 	}
 

@@ -33,7 +33,8 @@ func (h *QueueHandler) EnterQueue(c echo.Context) error {
 	}
 
 	var req struct {
-		EventID   string `json:"event_id"`
+		EventID string `json:"event_id"`
+		// todo: is sessionId generate from front
 		SessionID string `json:"session_id"`
 	}
 
