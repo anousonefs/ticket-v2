@@ -905,3 +905,28 @@ func GenerateSecureSessionID() string {
 	}
 	return fmt.Sprintf("session_%x", b)
 }
+
+// HELPER FUNCTION - Check if user is already in processing
+func (s *QueueService) isUserInProcessing(ctx context.Context, eventID, userID string) (bool, error) {
+	processingKey := fmt.Sprintf("queue:processing:%s", eventID)
+
+	// Get all processing users
+	members, err := s.Redis.SMembers(ctx, processingKey).Result()
+	if err != nil {
+		return false, err
+	}
+
+	// Check if user is in the processing set
+	for _, member := range members {
+		var user models.ProcessingUser
+		if err := json.Unmarshal([]byte(member), &user); err != nil {
+			continue // Skip invalid entries
+		}
+
+		if user.UserID == userID {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
