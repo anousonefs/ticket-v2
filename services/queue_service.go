@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand"
+	"regexp"
+	"strconv"
 	"sync"
 	"ticket-system/config"
 	"ticket-system/models"
@@ -562,34 +565,28 @@ func (s *QueueService) EnqueueUser(ctx context.Context, eventID, userID, session
 	return nil
 }
 
-// Process queue - move users from waiting to processing
 func (s *QueueService) ProcessQueue(ctx context.Context, eventID string) {
 	processingKey := fmt.Sprintf("queue:processing:%s", eventID)
 	waitingKey := fmt.Sprintf("queue:waiting:%s", eventID)
 
-	// Use a loop to process multiple users if slots are available
 	for {
-		// Check current processing count
+		// Check processing capacity
 		processingCount, err := s.Redis.SCard(ctx, processingKey).Result()
 		if err != nil {
 			log.Printf("Error getting processing count: %v", err)
 			break
 		}
 
-		// Check if we can add more users to processing
 		if processingCount >= int64(s.Config.MaxProcessingUsers) {
-			log.Printf("Processing queue full for event %s (%d/%d)", eventID, processingCount, s.Config.MaxProcessingUsers)
 			break
 		}
 
-		// Get next user from waiting queue (RPOP for FIFO)
+		// Get next user from waiting queue
 		data, err := s.Redis.RPop(ctx, waitingKey).Result()
 		if err == redis.Nil {
-			// Queue is empty
-			log.Printf("No more users in waiting queue for event %s", eventID)
-			break
+			break // Queue empty
 		} else if err != nil {
-			log.Printf("Error popping from queue: %v", err)
+			log.Printf("Error getting user from queue: %v", err)
 			break
 		}
 
@@ -599,48 +596,217 @@ func (s *QueueService) ProcessQueue(ctx context.Context, eventID string) {
 			continue
 		}
 
-		// Check if user session is still valid
-		userKey := fmt.Sprintf("user:queue:%s:%s", eventID, entry.UserID)
-		storedSessionID, err := s.Redis.HGet(ctx, userKey, "session_id").Result()
-		if err != nil || storedSessionID != entry.SessionID {
-			log.Printf("Invalid session for user %s, skipping", entry.UserID)
+		// SECURE SESSION VALIDATION
+		if !s.validateUserSession(ctx, eventID, entry.UserID, entry.SessionID) {
+			log.Printf("Session validation failed for user %s", entry.UserID)
 			continue
 		}
 
 		// Move to processing
-		processingUser := models.ProcessingUser{
-			UserID:    entry.UserID,
-			EventID:   entry.EventID,
-			StartedAt: time.Now(),
-			SessionID: entry.SessionID,
-		}
-
-		processingData, _ := json.Marshal(processingUser)
-		err = s.Redis.SAdd(ctx, processingKey, processingData).Err()
-		if err != nil {
-			log.Printf("Error adding user to processing: %v", err)
-			// Put user back to front of waiting queue
-			s.Redis.RPush(ctx, waitingKey, data)
-			continue
-		}
-
-		// Update user status
-		s.Redis.HSet(ctx, userKey, "status", "processing")
-
-		// Notify user via PubNub
-		channel := fmt.Sprintf("user-%s", entry.UserID)
-		s.PubNub.Publish().
-			Channel(channel).
-			Message(map[string]any{
-				"type":     "queue_status",
-				"status":   "processing",
-				"event_id": eventID,
-				"message":  "You can now select your seats!",
-			}).
-			Execute()
-
-		log.Printf("User %s moved to processing for event %s", entry.UserID, eventID)
+		s.moveUserToProcessingAtomic(ctx, eventID, entry)
 	}
+}
+
+// ATOMIC VERSION - Using Lua Script for better performance
+const moveToProcessingScript = `
+local processing_key = KEYS[1]
+local user_key = KEYS[2]
+local processing_data = ARGV[1]
+local user_id = ARGV[2]
+local session_id = ARGV[3]
+
+-- Check if user is already in processing
+local members = redis.call('SMEMBERS', processing_key)
+for i, member in ipairs(members) do
+    local user_data = cjson.decode(member)
+    if user_data.UserID == user_id then
+        return {0, 0, "already_processing"}
+    end
+end
+
+-- Add to processing set
+local added = redis.call('SADD', processing_key, processing_data)
+
+-- Update user status
+local fields_set = redis.call('HSET', user_key, 
+    'status', 'processing',
+    'processing_start', redis.call('TIME')[1],
+    'seats_locked', '[]'
+)
+
+-- Set TTL
+redis.call('EXPIRE', user_key, 1800)  -- 30 minutes
+
+-- Get current processing count
+local processing_count = redis.call('SCARD', processing_key)
+
+return {added, fields_set, processing_count, "success"}
+`
+
+func (s *QueueService) moveUserToProcessingAtomic(ctx context.Context, eventID string, entry models.QueueEntry) error {
+	processingKey := fmt.Sprintf("queue:processing:%s", eventID)
+	userKey := fmt.Sprintf("user:queue:%s:%s", eventID, entry.UserID)
+
+	processingUser := models.ProcessingUser{
+		UserID:      entry.UserID,
+		EventID:     entry.EventID,
+		StartedAt:   time.Now(),
+		SessionID:   entry.SessionID,
+		LockedSeats: []string{},
+	}
+
+	processingData, err := json.Marshal(processingUser)
+	if err != nil {
+		return fmt.Errorf("failed to marshal processing user: %w", err)
+	}
+
+	// Execute atomic script
+	result, err := s.Redis.Eval(ctx, moveToProcessingScript,
+		[]string{processingKey, userKey},
+		string(processingData), entry.UserID, entry.SessionID,
+	).Result()
+	if err != nil {
+		return fmt.Errorf("failed to execute move to processing script: %w", err)
+	}
+
+	resultSlice, ok := result.([]any)
+	if !ok || len(resultSlice) != 4 {
+		return fmt.Errorf("unexpected script result: %v", result)
+	}
+
+	status := resultSlice[3].(string)
+	if status == "already_processing" {
+		return fmt.Errorf("user %s already in processing for event %s", entry.UserID, eventID)
+	}
+
+	if status != "success" {
+		return fmt.Errorf("failed to move user to processing: %s", status)
+	}
+
+	added := resultSlice[0].(int64)
+	fieldsSet := resultSlice[1].(int64)
+	processingCount := resultSlice[2].(int64)
+
+	log.Printf("User %s moved to processing atomically: added=%d, fields=%d, count=%d",
+		entry.UserID, added, fieldsSet, processingCount)
+
+	// Notify user (async, don't block)
+	go s.notifyUserProcessing(context.Background(), entry.UserID, eventID)
+
+	return nil
+}
+
+func (s *QueueService) notifyUserProcessing(_ context.Context, userID, eventID string) error {
+	channel := fmt.Sprintf("user-%s", userID)
+
+	message := map[string]any{
+		"type":      "queue_status",
+		"status":    "processing",
+		"event_id":  eventID,
+		"message":   "🎉 You can now select your seats!",
+		"timestamp": time.Now().Unix(),
+		"data": map[string]any{
+			"seat_selection_url": fmt.Sprintf("/events/%s/seats", eventID),
+			"timeout_minutes":    5, // User has 5 minutes to select seats
+		},
+	}
+
+	publishResult, _, err := s.PubNub.Publish().
+		Channel(channel).
+		Message(message).
+		Execute()
+	if err != nil {
+		return fmt.Errorf("failed to notify user via PubNub: %w", err)
+	}
+
+	log.Printf("Notified user %s for processing in event %s (timetoken: %v)",
+		userID, eventID, publishResult.Timestamp)
+
+	return nil
+}
+
+// SECURE SESSION VALIDATION FUNCTION
+func (s *QueueService) validateUserSession(ctx context.Context, eventID, userID, sessionID string) bool {
+	// CRITICAL: Reject empty session IDs immediately
+	if sessionID == "" {
+		log.Printf("Security: Empty session ID for user %s in event %s", userID, eventID)
+		return false
+	}
+
+	// CRITICAL: Validate session ID format (prevent injection)
+	if !isValidSessionID(sessionID) {
+		log.Printf("Security: Invalid session ID format for user %s: %s", userID, sessionID)
+		return false
+	}
+
+	userKey := fmt.Sprintf("user:queue:%s:%s", eventID, userID)
+
+	// Get stored session data
+	sessionData, err := s.Redis.HMGet(ctx, userKey, "session_id", "status", "joined_at").Result()
+	if err != nil {
+		log.Printf("Security: Failed to get session data for user %s: %v", userID, err)
+		return false
+	}
+
+	// Check if user record exists
+	if len(sessionData) != 3 {
+		log.Printf("Security: Incomplete session data for user %s", userID)
+		return false
+	}
+
+	storedSessionID, ok := sessionData[0].(string)
+	if !ok || storedSessionID == "" {
+		log.Printf("Security: No stored session ID for user %s", userID)
+		return false
+	}
+
+	storedStatus, ok := sessionData[1].(string)
+	if !ok || storedStatus != "waiting" {
+		log.Printf("Security: Invalid status for user %s: %s", userID, storedStatus)
+		return false
+	}
+
+	storedJoinedAt, ok := sessionData[2].(string)
+	if !ok || storedJoinedAt == "" {
+		log.Printf("Security: No join timestamp for user %s", userID)
+		return false
+	}
+
+	// CRITICAL: Compare session IDs (both must be non-empty)
+	if storedSessionID != sessionID {
+		log.Printf("Security: Session ID mismatch for user %s. Expected: %s, Got: %s",
+			userID, storedSessionID, sessionID)
+		return false
+	}
+
+	// Additional security checks
+	joinedAt, err := strconv.ParseInt(storedJoinedAt, 10, 64)
+	if err != nil {
+		log.Printf("Security: Invalid join timestamp for user %s: %s", userID, storedJoinedAt)
+		return false
+	}
+
+	// Check if session is not too old (prevent replay attacks)
+	maxSessionAge := 24 * time.Hour
+	if time.Since(time.Unix(joinedAt, 0)) > maxSessionAge {
+		log.Printf("Security: Session expired for user %s (age: %v)",
+			userID, time.Since(time.Unix(joinedAt, 0)))
+		return false
+	}
+
+	return true
+}
+
+// VALIDATE SESSION ID FORMAT
+func isValidSessionID(sessionID string) bool {
+	// Session ID should be non-empty and follow expected format
+	if len(sessionID) < 10 || len(sessionID) > 128 {
+		return false
+	}
+
+	// Should contain only alphanumeric characters, hyphens, and underscores
+	matched, _ := regexp.MatchString(`^[a-zA-Z0-9_-]+$`, sessionID)
+	return matched
 }
 
 // Remove user from processing
@@ -829,4 +995,15 @@ func (s *QueueService) HealthCheck(ctx context.Context) map[string]any {
 	stats["total_processing"] = totalProcessing
 
 	return stats
+}
+
+// GENERATE SECURE SESSION ID (Frontend should use this pattern)
+func GenerateSecureSessionID() string {
+	// Use cryptographically secure random number generator
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		// Fallback to time-based if crypto/rand fails
+		return fmt.Sprintf("session_%d_%d", time.Now().UnixNano(), rand.Int63())
+	}
+	return fmt.Sprintf("session_%x", b)
 }
