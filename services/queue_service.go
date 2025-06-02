@@ -25,21 +25,146 @@ type QueueService struct {
 	timeoutMap   map[string]*time.Timer // Track active timeouts
 	timeoutMutex sync.RWMutex           // Protect timeout map
 	stopChan     chan struct{}
+
+	processingChannels map[string]chan struct{} // One channel per event
+	channelMutex       sync.RWMutex             // Protect the map
+	activeProcessors   map[string]bool          // Track active processors
+	processorMutex     sync.RWMutex             // Protect active processors
+	wg                 sync.WaitGroup
 }
 
 func NewQueueService(redisClient *redis.Client, pn *pubnub.PubNub, cfg *config.Config) *QueueService {
 	service := &QueueService{
-		Redis:      redisClient,
-		PubNub:     pn,
-		Config:     cfg,
-		timeoutMap: make(map[string]*time.Timer),
-		stopChan:   make(chan struct{}),
+		Redis:              redisClient,
+		PubNub:             pn,
+		Config:             cfg,
+		timeoutMap:         make(map[string]*time.Timer),
+		stopChan:           make(chan struct{}),
+		processingChannels: make(map[string]chan struct{}),
+		activeProcessors:   make(map[string]bool),
 	}
 
 	// Start the centralized timeout manager
 	go service.timeoutManager()
 
 	return service
+}
+
+// SAFE ProcessQueue trigger - only one goroutine per event
+func (s *QueueService) TriggerProcessQueue(eventID string) {
+	s.channelMutex.Lock()
+	defer s.channelMutex.Unlock()
+
+	// Get or create processing channel for this event
+	processingChan, exists := s.processingChannels[eventID]
+	if !exists {
+		processingChan = make(chan struct{}, 1) // Buffered to prevent blocking
+		s.processingChannels[eventID] = processingChan
+
+		// Start single processor goroutine for this event
+		s.wg.Add(1)
+		go s.eventProcessor(eventID, processingChan)
+
+		log.Printf("Started processor goroutine for event %s", eventID)
+	}
+
+	// Send trigger signal (non-blocking)
+	select {
+	case processingChan <- struct{}{}:
+		log.Printf("Triggered processing for event %s", eventID)
+	default:
+		log.Printf("Processing already pending for event %s", eventID)
+	}
+}
+
+// Single processor goroutine per event
+func (s *QueueService) eventProcessor(eventID string, triggerChan <-chan struct{}) {
+	defer s.wg.Done()
+	defer func() {
+		// Cleanup when goroutine exits
+		s.channelMutex.Lock()
+		delete(s.processingChannels, eventID)
+		s.channelMutex.Unlock()
+
+		s.processorMutex.Lock()
+		delete(s.activeProcessors, eventID)
+		s.processorMutex.Unlock()
+
+		log.Printf("Processor goroutine for event %s stopped", eventID)
+	}()
+
+	log.Printf("Event processor started for %s", eventID)
+
+	for {
+		select {
+		case <-triggerChan:
+			// Process queue when triggered
+			s.processorMutex.Lock()
+			s.activeProcessors[eventID] = true
+			s.processorMutex.Unlock()
+
+			log.Printf("Processing queue for event %s", eventID)
+			s.processQueueInternal(context.Background(), eventID)
+
+			s.processorMutex.Lock()
+			s.activeProcessors[eventID] = false
+			s.processorMutex.Unlock()
+
+		case <-s.stopChan:
+			log.Printf("Stopping processor for event %s", eventID)
+			return
+		}
+	}
+}
+
+// Internal processing logic (called by single goroutine)
+func (s *QueueService) processQueueInternal(ctx context.Context, eventID string) {
+	processingKey := fmt.Sprintf("queue:processing:%s", eventID)
+	waitingKey := fmt.Sprintf("queue:waiting:%s", eventID)
+
+	processedCount := 0
+
+	for {
+		// Check processing capacity
+		processingCount, err := s.Redis.SCard(ctx, processingKey).Result()
+		if err != nil {
+			log.Printf("Error getting processing count: %v", err)
+			break
+		}
+
+		if processingCount >= int64(s.Config.MaxProcessingUsers) {
+			log.Printf("Processing queue full for event %s (%d/%d)",
+				eventID, processingCount, s.Config.MaxProcessingUsers)
+			break
+		}
+
+		// Get next user
+		data, err := s.Redis.RPop(ctx, waitingKey).Result()
+		if err == redis.Nil {
+			log.Printf("No more users in queue for event %s (processed %d)", eventID, processedCount)
+			break
+		} else if err != nil {
+			log.Printf("Error getting user from queue: %v", err)
+			break
+		}
+
+		var entry models.QueueEntry
+		if err := json.Unmarshal([]byte(data), &entry); err != nil {
+			log.Printf("Error unmarshaling queue entry: %v", err)
+			continue
+		}
+
+		// Validate and process user
+		if s.validateUserSession(ctx, eventID, entry.UserID, entry.SessionID) {
+			if err := s.moveUserToProcessingAtomic(ctx, eventID, entry); err != nil {
+				log.Printf("Failed to move user %s to processing: %v", entry.UserID, err)
+			} else {
+				processedCount++
+			}
+		}
+	}
+
+	log.Printf("Queue processing completed for event %s: processed %d users", eventID, processedCount)
 }
 
 // UpdateQueuePositions - Improved version with batch updates and optimizations
@@ -290,7 +415,8 @@ func (s *QueueService) checkProcessingTimeouts() {
 			if time.Since(user.StartedAt) > s.Config.SeatLockTimeout {
 				log.Printf("Timeout detected for user %s in event %s", user.UserID, eventID)
 				s.RemoveFromProcessing(ctx, eventID, user.UserID)
-				go s.ProcessQueue(ctx, eventID) // Process next in queue
+				// go s.ProcessQueue(ctx, eventID) // Process next in queue
+				s.TriggerProcessQueue(eventID)
 			}
 		}
 	}
@@ -392,7 +518,8 @@ func (s *QueueService) EnqueueUserAtomic(ctx context.Context, eventID, userID, s
 				// Release lock when processing complete
 				s.Redis.Del(context.Background(), lockKey)
 			}()
-			s.ProcessQueue(context.Background(), eventID)
+			// s.ProcessQueue(context.Background(), eventID)
+			s.TriggerProcessQueue(eventID)
 		}()
 	}
 
@@ -853,7 +980,7 @@ func (s *QueueService) GetUserQueueStatus(ctx context.Context, eventID, userID s
 }
 
 // Graceful shutdown
-func (s *QueueService) Shutdown() {
+func (s *QueueService) Shutdown2() {
 	close(s.stopChan)
 
 	// Cancel all active timeouts
@@ -863,6 +990,27 @@ func (s *QueueService) Shutdown() {
 		delete(s.timeoutMap, key)
 	}
 	s.timeoutMutex.Unlock()
+}
+
+func (s *QueueService) Shutdown() {
+	log.Println("Shutting down queue service...")
+
+	// Signal all goroutines to stop
+	close(s.stopChan)
+
+	// Wait for all goroutines to finish
+	done := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		log.Println("All processors stopped gracefully")
+	case <-time.After(30 * time.Second):
+		log.Println("Timeout waiting for processors to stop")
+	}
 }
 
 // Health check for queue service

@@ -112,7 +112,8 @@ func (s *PaymentService) handlePaymentNotification(message *pubnub.PNMessage) {
 		s.queue.RemoveFromProcessing(ctx, eventID, userID)
 
 		// todo: check go context
-		go s.queue.ProcessQueue(ctx, eventID)
+		// go s.queue.ProcessQueue(ctx, eventID)
+		s.queue.TriggerProcessQueue(eventID)
 
 		channel := fmt.Sprintf("user-%s", userID)
 		s.PubNub.Publish().
