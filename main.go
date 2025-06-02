@@ -16,7 +16,6 @@ import (
 	"ticket-system/utils"
 	"time"
 
-	"github.com/labstack/echo/v5"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/plugins/migratecmd"
 	pubnub "github.com/pubnub/go"
@@ -223,7 +222,7 @@ func main() {
 	go handleShutdown(cancel)
 
 	// Register routes
-	app.OnBeforeServe().Add(func(e *core.ServeEvent) error {
+	app.OnServe().BindFunc(func(e *core.ServeEvent) error {
 		// Queue endpoints
 		e.Router.POST("/api/queue/enter", queueHandler.EnterQueue)
 		e.Router.GET("/api/queue/position", queueHandler.GetQueuePosition)
@@ -256,22 +255,19 @@ func main() {
 		}
 
 		// Health check
-		e.Router.GET("/health", func(c echo.Context) error {
-			// Check Redis connection
+		e.Router.GET("/health", func(e *core.RequestEvent) error {
 			if err := utils.RedisHealthCheck(redisClient); err != nil {
-				return c.JSON(503, map[string]string{
+				return e.JSON(503, map[string]string{
 					"status": "unhealthy",
 					"error":  err.Error(),
 				})
 			}
-
-			return c.JSON(200, map[string]string{
-				"status": "healthy",
-			})
+			return e.JSON(200, map[string]string{"status": "healthy"})
 		})
 
 		log.Println("Server routes registered")
-		return nil
+
+		return e.Next()
 	})
 
 	// Start server

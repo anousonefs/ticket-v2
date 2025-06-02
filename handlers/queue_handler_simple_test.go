@@ -9,14 +9,14 @@ import (
 	"github.com/labstack/echo/v5"
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/apis"
-	"github.com/pocketbase/pocketbase/models"
+		models "github.com/pocketbase/pocketbase/core"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestQueueHandler_EnterQueue_Unauthorized_Simple(t *testing.T) {
 	// This is a simple test that doesn't require mocks
 	app := pocketbase.New()
-	
+
 	// Create a simple queue handler without dependencies for this test
 	handler := &QueueHandler{
 		app:          app,
@@ -38,7 +38,7 @@ func TestQueueHandler_EnterQueue_Unauthorized_Simple(t *testing.T) {
 
 func TestQueueHandler_GetQueuePosition_MissingEventID_Simple(t *testing.T) {
 	app := pocketbase.New()
-	
+
 	handler := &QueueHandler{
 		app:          app,
 		queueService: nil,
@@ -63,7 +63,7 @@ func TestQueueHandler_GetQueuePosition_MissingEventID_Simple(t *testing.T) {
 
 func TestQueueHandler_GetQueueMetrics_MissingEventID_Simple(t *testing.T) {
 	app := pocketbase.New()
-	
+
 	handler := &QueueHandler{
 		app:          app,
 		queueService: nil,
@@ -82,7 +82,7 @@ func TestQueueHandler_GetQueueMetrics_MissingEventID_Simple(t *testing.T) {
 
 func TestQueueHandler_LeaveQueue_InvalidRequest_Simple(t *testing.T) {
 	app := pocketbase.New()
-	
+
 	handler := &QueueHandler{
 		app:          app,
 		queueService: nil,
@@ -109,7 +109,7 @@ func TestQueueHandler_LeaveQueue_InvalidRequest_Simple(t *testing.T) {
 
 func TestQueueHandler_EnterQueue_InvalidJSON_Simple(t *testing.T) {
 	app := pocketbase.New()
-	
+
 	handler := &QueueHandler{
 		app:          app,
 		queueService: nil,
@@ -133,3 +133,4 @@ func TestQueueHandler_EnterQueue_InvalidJSON_Simple(t *testing.T) {
 
 	assert.Error(t, err)
 }
+
