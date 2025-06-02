@@ -493,7 +493,7 @@ func (s *QueueService) EnqueueUserAtomic(ctx context.Context, eventID, userID, s
 		return fmt.Errorf("failed to execute enqueue script: %w", err)
 	}
 
-	resultSlice, ok := result.([]interface{})
+	resultSlice, ok := result.([]any)
 	if !ok || len(resultSlice) != 4 {
 		return fmt.Errorf("unexpected script result: %v", result)
 	}
