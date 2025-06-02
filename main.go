@@ -224,34 +224,35 @@ func main() {
 	// Register routes
 	app.OnServe().BindFunc(func(e *core.ServeEvent) error {
 		// Queue endpoints
-		e.Router.POST("/api/queue/enter", queueHandler.EnterQueue)
-		e.Router.GET("/api/queue/position", queueHandler.GetQueuePosition)
-		e.Router.GET("/api/queue/metrics", queueHandler.GetQueueMetrics)
-		e.Router.POST("/api/queue/leave", queueHandler.LeaveQueue)
+		e.Router.POST("/api/v1/queue/enter", queueHandler.EnterQueue)
+		e.Router.GET("/api/v1/queue/position", queueHandler.GetQueuePosition)
+		e.Router.GET("/api/v1/queue/metrics", queueHandler.GetQueueMetrics)
+		e.Router.POST("/api/v1/queue/leave", queueHandler.LeaveQueue)
+		e.Router.GET("/api/v1/events/{eventId}/waiting", queueHandler.GetWaitingPage)
 
 		// Seat endpoints
-		e.Router.GET("/api/events/:eventId/seats", seatHandler.GetSeats)
-		e.Router.POST("/api/seats/lock-batch", seatHandler.LockSeatsBatch)
-		e.Router.POST("/api/seats/unlock-batch", seatHandler.UnlockSeatsBatch)
+		e.Router.GET("/api/v1/events/:eventId/seats", seatHandler.GetSeats)
+		e.Router.POST("/api/v1/seats/lock-batch", seatHandler.LockSeatsBatch)
+		e.Router.POST("/api/v1/seats/unlock-batch", seatHandler.UnlockSeatsBatch)
 
 		// Booking endpoints
-		e.Router.POST("/api/booking/confirm", bookingHandler.ConfirmBooking)
-		e.Router.GET("/api/booking/history", bookingHandler.GetBookingHistory)
+		e.Router.POST("/api/v1/booking/confirm", bookingHandler.ConfirmBooking)
+		e.Router.GET("/api/v1/booking/history", bookingHandler.GetBookingHistory)
 
 		// Payment endpoints
-		e.Router.GET("/api/payment/:paymentId", paymentHandler.GetPaymentDetails)
-		e.Router.GET("/api/payment/:paymentId/status", paymentHandler.CheckPaymentStatus)
-		e.Router.POST("/api/payment/:paymentId/cancel", paymentHandler.CancelPayment)
+		e.Router.GET("/api/v1/payment/:paymentId", paymentHandler.GetPaymentDetails)
+		e.Router.GET("/api/v1/payment/:paymentId/status", paymentHandler.CheckPaymentStatus)
+		e.Router.POST("/api/v1/payment/:paymentId/cancel", paymentHandler.CancelPayment)
 
 		// Admin endpoints
-		e.Router.GET("/api/admin/queue-dashboard", adminHandler.GetQueueDashboard)
-		e.Router.GET("/api/admin/queue-details", adminHandler.GetQueueDetails)
-		e.Router.POST("/api/admin/force-process-queue", adminHandler.ForceProcessQueue)
-		e.Router.POST("/api/admin/remove-from-queue", adminHandler.RemoveFromQueue)
+		e.Router.GET("/api/v1/admin/queue-dashboard", adminHandler.GetQueueDashboard)
+		e.Router.GET("/api/v1/admin/queue-details", adminHandler.GetQueueDetails)
+		e.Router.POST("/api/v1/admin/force-process-queue", adminHandler.ForceProcessQueue)
+		e.Router.POST("/api/v1/admin/remove-from-queue", adminHandler.RemoveFromQueue)
 
 		// Test endpoint for payment simulation
 		if cfg.Environment == "development" {
-			e.Router.POST("/api/test/simulate-payment", paymentHandler.SimulatePayment)
+			e.Router.POST("/api/v1/test/simulate-payment", paymentHandler.SimulatePayment)
 		}
 
 		// Health check

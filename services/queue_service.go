@@ -1078,3 +1078,41 @@ func (s *QueueService) isUserInProcessing(ctx context.Context, eventID, userID s
 
 	return false, nil
 }
+
+type WaitingPageInfo struct {
+	EventID       string    `json:"event_id"`
+	SaleStartTime time.Time `json:"sale_start_time"`
+	CountdownSecs int       `json:"countdown_seconds"`
+	CanEnterQueue bool      `json:"can_enter_queue"`
+}
+
+func (qs *QueueService) GetWaitingPageInfo(ctx context.Context, eventID string) (*WaitingPageInfo, error) {
+	// Get event sale start time from Redis or database
+	// saleStartKey := fmt.Sprintf("event:%s:sale_start", eventID)
+	// _, err := qs.redis.Get(ctx, saleStartKey).Result()
+	// if err != nil {
+	// 	return nil, fmt.Errorf("qs.redis.Get(saleStartKey: %v): %w", saleStartKey, err)
+	// }
+
+	startTime := "2025-06-02T21:30:05+07:00"
+
+	saleStartTime, err := time.Parse(time.RFC3339, startTime)
+	if err != nil {
+		return nil, err
+	}
+
+	now := time.Now()
+	canEnterQueue := now.After(saleStartTime)
+	countdownSecs := 0
+
+	if !canEnterQueue {
+		countdownSecs = int(saleStartTime.Sub(now).Seconds())
+	}
+
+	return &WaitingPageInfo{
+		EventID:       eventID,
+		SaleStartTime: saleStartTime,
+		CountdownSecs: countdownSecs,
+		CanEnterQueue: canEnterQueue,
+	}, nil
+}

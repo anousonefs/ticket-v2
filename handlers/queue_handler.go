@@ -3,6 +3,7 @@ package handlers
 
 import (
 	"fmt"
+	"log/slog"
 	"net/http"
 	"ticket-system/services"
 
@@ -126,4 +127,16 @@ func (h *QueueHandler) LeaveQueue(e *core.RequestEvent) error {
 	}
 
 	return e.JSON(http.StatusOK, map[string]any{"message": "Successfully left queue"})
+}
+
+func (h *QueueHandler) GetWaitingPage(e *core.RequestEvent) error {
+	eventID := e.Request.PathValue("eventId")
+
+	info, err := h.queueService.GetWaitingPageInfo(e.Request.Context(), eventID)
+	if err != nil {
+		slog.Error(fmt.Sprintf("h.queueService.GetWaitingPageInfo(%v)", eventID), "error", err)
+		return e.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+
+	return e.JSON(http.StatusOK, info)
 }
