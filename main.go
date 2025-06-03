@@ -11,9 +11,10 @@ import (
 	"os/signal"
 	"syscall"
 	"ticket-system/config"
-	"ticket-system/handlers"
+	"ticket-system/internal/handlers"
+	"ticket-system/internal/services"
+	"ticket-system/internal/services/bank/jdb"
 	"ticket-system/models"
-	"ticket-system/services"
 	"ticket-system/utils"
 	"time"
 
@@ -195,10 +196,18 @@ func main() {
 
 	pn := pubnub.NewPubNub(pnConfig)
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	jdbInstance, err := jdb.New(ctx, &cfg.JDBConfig)
+	if err != nil {
+		panic(err)
+	}
+
 	// Initialize services
 	queueService := services.NewQueueService(redisClient, pn, cfg)
 	seatService := services.NewSeatService(redisClient)
-	paymentService := services.NewPaymentService(redisClient, pn, queueService)
+	paymentService := services.NewPaymentService(redisClient, pn, queueService, jdbInstance)
 
 	// Initialize handlers
 	queueHandler := handlers.NewQueueHandler(app, queueService)
@@ -211,10 +220,6 @@ func main() {
 	migratecmd.MustRegister(app, app.RootCmd, migratecmd.Config{
 		Automigrate: true,
 	})
-
-	// Create context for background tasks
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	// Start background tasks
 	go queueService.UpdateQueuePositions(ctx)
@@ -236,7 +241,7 @@ func main() {
 		e.Router.GET("/api/v1/events/{eventId}/waiting", queueHandler.GetWaitingPage)
 
 		// Seat endpoints
-		e.Router.GET("/api/v1/events/:eventId/seats", seatHandler.GetSeats)
+		e.Router.GET("/api/v1/events/{eventId}/seats", seatHandler.GetSeats2)
 		e.Router.POST("/api/v1/seats/lock", seatHandler.LockSeat)
 		e.Router.POST("/api/v1/seats/unlock-batch", seatHandler.UnlockSeat)
 
@@ -244,10 +249,13 @@ func main() {
 		e.Router.POST("/api/v1/booking/confirm", bookingHandler.ConfirmBooking)
 		e.Router.GET("/api/v1/booking/history", bookingHandler.GetBookingHistory)
 
+		// jdb
+		e.Router.POST("/api/v1/payment/gen-jdb", paymentHandler.GenJdbQr)
+
 		// Payment endpoints
-		e.Router.GET("/api/v1/payment/:paymentId", paymentHandler.GetPaymentDetails)
-		e.Router.GET("/api/v1/payment/:paymentId/status", paymentHandler.CheckPaymentStatus)
-		e.Router.POST("/api/v1/payment/:paymentId/cancel", paymentHandler.CancelPayment)
+		e.Router.GET("/api/v1/payment/{paymentId}", paymentHandler.GetPaymentDetails)
+		e.Router.GET("/api/v1/payment/{paymentId}/status", paymentHandler.CheckPaymentStatus)
+		e.Router.POST("/api/v1/payment/{paymentId}/cancel", paymentHandler.CancelPayment)
 
 		// Admin endpoints
 		e.Router.GET("/api/v1/admin/queue-dashboard", adminHandler.GetQueueDashboard)

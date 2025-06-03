@@ -5,23 +5,28 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"ticket-system/internal/services/bank/jdb"
+	"ticket-system/utils"
 	"time"
 
 	pubnub "github.com/pubnub/go"
 	"github.com/redis/go-redis/v9"
+	"github.com/shopspring/decimal"
 )
 
 type PaymentService struct {
-	Redis  *redis.Client
-	PubNub *pubnub.PubNub
-	queue  *QueueService
+	Redis   *redis.Client
+	PubNub  *pubnub.PubNub
+	queue   *QueueService
+	payment *jdb.Yespay
 }
 
-func NewPaymentService(redisClient *redis.Client, pn *pubnub.PubNub, queueService *QueueService) *PaymentService {
+func NewPaymentService(redisClient *redis.Client, pn *pubnub.PubNub, queueService *QueueService, payment *jdb.Yespay) *PaymentService {
 	service := &PaymentService{
-		Redis:  redisClient,
-		PubNub: pn,
-		queue:  queueService,
+		Redis:   redisClient,
+		PubNub:  pn,
+		queue:   queueService,
+		payment: payment,
 	}
 
 	go service.SubscribeToPaymentNotifications()
@@ -67,6 +72,33 @@ func (s *PaymentService) SubscribeToPaymentNotifications() {
 			go s.handlePaymentNotification(message)
 		}
 	}
+}
+
+type GenJdbQrRequest struct {
+	EventID string          `json:"event_id"`
+	BookID  string          `json:"book_id"`
+	Phone   string          `json:"phone"`
+	Amount  decimal.Decimal `json:"amount"`
+}
+
+func (s *PaymentService) GenJdbQr(ctx context.Context, params GenJdbQrRequest) (string, error) {
+	refID, _ := utils.GenerateCode(4)
+
+	f := &jdb.FormQR{
+		Phone:          params.Phone,
+		ReferenceLabel: fmt.Sprintf("%s-%s", params.BookID, refID),
+		TerminalLabel:  refID,
+		UUID:           params.BookID,
+		Amount:         params.Amount,
+		MerchantID:     "",
+	}
+
+	envCode, err := s.payment.GenQRCode(ctx, f)
+	if err != nil {
+		return "", err
+	}
+
+	return envCode, nil
 }
 
 func (s *PaymentService) handlePaymentNotification(message *pubnub.PNMessage) {

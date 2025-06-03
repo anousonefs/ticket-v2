@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"strconv"
+	"ticket-system/internal/services/bank/jdb"
 	"time"
 )
 
@@ -37,10 +38,41 @@ type Config struct {
 	// Monitoring
 	EnableMetrics bool
 	MetricsPort   string
+	JDBConfig     jdb.Config
+}
+
+// GetEnv GetEnv func for load config from .env file.
+func GetEnv(key, fallback string) string {
+	if value, ok := os.LookupEnv(key); ok {
+		return value
+	}
+	return fallback
 }
 
 func LoadConfig() *Config {
+	jdbCfg := jdb.Config{
+		AID:         GetEnv("LAOQR_AID", "A005266284662577"),
+		IIN:         GetEnv("LAOQR_IIN", "32170418"),
+		ReceiverID:  os.Getenv("LAOQR_MID"),
+		MCC:         GetEnv("LAOQR_MCC", "5251"),
+		CCy:         GetEnv("LAOQR_CCY", "418"),
+		Country:     GetEnv("LAOQR_COUNTRY", "LA"),
+		MName:       os.Getenv("LAOQR_MNAME"),
+		MCity:       os.Getenv("LAOQR_MCITY"),
+		PNSubKey:    os.Getenv("PN_SUB_KEY"),
+		PNSubSecret: os.Getenv("PN_SUB_SECRET"),
+		PNUUID:      os.Getenv("PN_UUID"),
+		PNChannel:   os.Getenv("PN_CHANNEL"),
+		PNCipherKey: os.Getenv("PN_CIPHER_KEY"),
+		BaseURL:     os.Getenv("JDB_BASE_URL"),
+		PartnerID:   os.Getenv("JDB_PARTNER_ID"),
+		ClientID:    os.Getenv("JDB_CLIENT_ID"),
+		ClientKey:   os.Getenv("JDB_CLIENT_KEY"),
+		HMACKey:     os.Getenv("JDB_HMAC_KEY"),
+	}
+
 	return &Config{
+		JDBConfig: jdbCfg,
 		// Server
 		Port:        getEnv("PORT", "8090"),
 		Environment: getEnv("ENVIRONMENT", "development"),

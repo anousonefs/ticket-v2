@@ -131,3 +131,13 @@ func (s *SeatService) GetSeatAvailability(ctx context.Context, eventID string, s
 
 	return availability, nil
 }
+
+type SeatData struct {
+	ID      string  `db:"id" json:"id"`
+	Row     string  `db:"row" json:"row"`
+	Number  int     `db:"number" json:"number"`
+	Section string  `db:"section" json:"section"`
+	Price   float64 `db:"price" json:"price"`
+	EventID string  `db:"event_id" json:"event_id"`
+	Status  string  `json:"status"` // Will be populated from Redis
+}

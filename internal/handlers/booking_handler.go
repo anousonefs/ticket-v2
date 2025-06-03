@@ -2,8 +2,9 @@ package handlers
 
 import (
 	"fmt"
+	"log/slog"
 	"net/http"
-	"ticket-system/services"
+	"ticket-system/internal/services"
 
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/apis"
@@ -37,6 +38,7 @@ func (h *BookingHandler) ConfirmBooking(e *core.RequestEvent) error {
 	if err := e.BindBody(&req); err != nil {
 		return apis.NewBadRequestError("Invalid request", err)
 	}
+	slog.Info("confirm booking request", "userId", e.Auth.Id, "eventId", req.EventID, "seatIds", req.SeatIDs)
 	ctx := e.Request.Context()
 
 	totalAmount := 0.0
@@ -45,8 +47,9 @@ func (h *BookingHandler) ConfirmBooking(e *core.RequestEvent) error {
 		if err != nil {
 			return apis.NewBadRequestError("Invalid seat", err)
 		}
-		seatKey := fmt.Sprintf("seat:%s:%s", req.EventID, seatID)
+		seatKey := fmt.Sprintf("seat:%s:%s", req.EventID, e.Auth.Id)
 		lockedBy, _ := h.seatService.Redis.HGet(ctx, seatKey, "locked_by").Result()
+		fmt.Printf("locket by: %v, user id: %v\n", lockedBy, e.Auth.Id)
 		if lockedBy != e.Auth.Id {
 			return apis.NewBadRequestError("Seat not locked by user", nil)
 		}
@@ -65,7 +68,7 @@ func (h *BookingHandler) ConfirmBooking(e *core.RequestEvent) error {
 	booking := core.NewRecord(collection)
 	booking.Set("user_id", e.Auth.Id)
 	booking.Set("event_id", req.EventID)
-	booking.Set("payment_id", paymentID)
+	// booking.Set("payment_id", paymentID)
 	booking.Set("seats", req.SeatIDs)
 	booking.Set("total_amount", totalAmount)
 	booking.Set("status", "pending")
