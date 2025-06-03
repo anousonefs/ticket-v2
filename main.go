@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"ticket-system/config"
 	"ticket-system/handlers"
@@ -184,6 +185,8 @@ func main() {
 	redisClient := utils.NewRedisClient(cfg.RedisURL)
 	defer redisClient.Close()
 
+	sync.Once(syncActiveEventsToRedis(app, redisClient))
+
 	// Initialize PubNub
 	pnConfig := pubnub.NewConfig()
 	pnConfig.PublishKey = cfg.PubNubPublishKey
@@ -268,6 +271,8 @@ func main() {
 
 		log.Println("Server routes registered")
 
+		setupEventHooks(app, redisClient)
+
 		return e.Next()
 	})
 
@@ -275,6 +280,67 @@ func main() {
 	if err := app.Start(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func syncActiveEventsToRedis(app *pocketbase.PocketBase, redisClient *redis.Client) {
+	ctx := context.Background()
+
+	// Get active events from database
+	records, err := app.Dao().FindRecordsByExpr("events", nil, "status = 'active'")
+	if err != nil {
+		log.Printf("Error fetching active events: %v", err)
+		return
+	}
+
+	// Clear existing active_events set
+	redisClient.Del(ctx, "active_events")
+
+	// Add active events to Redis set
+	if len(records) > 0 {
+		var eventIDs []interface{}
+		for _, record := range records {
+			eventIDs = append(eventIDs, record.Id)
+		}
+
+		redisClient.SAdd(ctx, "active_events", eventIDs...)
+		log.Printf("Synced %d active events to Redis", len(eventIDs))
+	}
+}
+
+func setupEventHooks(app *pocketbase.PocketBase, redisClient *redis.Client) {
+	// When event is created
+	app.OnRecordAfterCreateRequest("events").Add(func(e *core.RecordCreateEvent) error {
+		if e.Record.GetString("status") == "active" {
+			ctx := context.Background()
+			redisClient.SAdd(ctx, "active_events", e.Record.Id)
+			log.Printf("Added new active event to Redis: %s", e.Record.Id)
+		}
+		return nil
+	})
+
+	// When event is updated
+	app.OnRecordAfterUpdateRequest("events").Add(func(e *core.RecordUpdateEvent) error {
+		ctx := context.Background()
+		eventID := e.Record.Id
+		newStatus := e.Record.GetString("status")
+
+		if newStatus == "active" {
+			redisClient.SAdd(ctx, "active_events", eventID)
+		} else {
+			redisClient.SRem(ctx, "active_events", eventID)
+		}
+
+		log.Printf("Updated event %s in Redis, status: %s", eventID, newStatus)
+		return nil
+	})
+
+	// When event is deleted
+	app.OnRecordAfterDeleteRequest("events").Add(func(e *core.RecordDeleteEvent) error {
+		ctx := context.Background()
+		redisClient.SRem(ctx, "active_events", e.Record.Id)
+		log.Printf("Removed deleted event from Redis: %s", e.Record.Id)
+		return nil
+	})
 }
 
 // restoreQueueState restores queue state from Redis on server restart
