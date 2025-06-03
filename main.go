@@ -6,9 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
 	"ticket-system/config"
 	"ticket-system/handlers"
@@ -16,6 +16,8 @@ import (
 	"ticket-system/services"
 	"ticket-system/utils"
 	"time"
+
+	"github.com/pocketbase/dbx"
 
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/plugins/migratecmd"
@@ -185,8 +187,6 @@ func main() {
 	redisClient := utils.NewRedisClient(cfg.RedisURL)
 	defer redisClient.Close()
 
-	sync.Once(syncActiveEventsToRedis(app, redisClient))
-
 	// Initialize PubNub
 	pnConfig := pubnub.NewConfig()
 	pnConfig.PublishKey = cfg.PubNubPublishKey
@@ -219,13 +219,15 @@ func main() {
 	// Start background tasks
 	go queueService.UpdateQueuePositions(ctx)
 	go queueService.CleanupInactiveQueues(ctx)
-	go restoreQueueState(redisClient, queueService)
 
 	// Setup graceful shutdown
 	go handleShutdown(cancel)
 
 	// Register routes
 	app.OnServe().BindFunc(func(e *core.ServeEvent) error {
+		syncActiveEventsToRedis(app, redisClient)
+		go restoreQueueState(redisClient, queueService)
+
 		// Queue endpoints
 		e.Router.POST("/api/v1/queue/enter", queueHandler.EnterQueue)
 		e.Router.GET("/api/v1/queue/position", queueHandler.GetQueuePosition)
@@ -235,8 +237,8 @@ func main() {
 
 		// Seat endpoints
 		e.Router.GET("/api/v1/events/:eventId/seats", seatHandler.GetSeats)
-		e.Router.POST("/api/v1/seats/lock-batch", seatHandler.LockSeatsBatch)
-		e.Router.POST("/api/v1/seats/unlock-batch", seatHandler.UnlockSeatsBatch)
+		e.Router.POST("/api/v1/seats/lock", seatHandler.LockSeat)
+		e.Router.POST("/api/v1/seats/unlock-batch", seatHandler.UnlockSeat)
 
 		// Booking endpoints
 		e.Router.POST("/api/v1/booking/confirm", bookingHandler.ConfirmBooking)
@@ -285,9 +287,11 @@ func main() {
 func syncActiveEventsToRedis(app *pocketbase.PocketBase, redisClient *redis.Client) {
 	ctx := context.Background()
 
-	// Get active events from database
-	records, err := app.Dao().FindRecordsByExpr("events", nil, "status = 'active'")
-	if err != nil {
+	// Get active events from database (latest PocketBase version)
+	var records []dbx.NullStringMap
+	if err := app.DB().NewQuery(
+		"SELECT id FROM events WHERE status = 'publish'",
+	).All(&records); err != nil {
 		log.Printf("Error fetching active events: %v", err)
 		return
 	}
@@ -299,46 +303,104 @@ func syncActiveEventsToRedis(app *pocketbase.PocketBase, redisClient *redis.Clie
 	if len(records) > 0 {
 		var eventIDs []interface{}
 		for _, record := range records {
-			eventIDs = append(eventIDs, record.Id)
+			if id := record["id"].String; id != "" {
+				eventIDs = append(eventIDs, id)
+			}
 		}
 
-		redisClient.SAdd(ctx, "active_events", eventIDs...)
-		log.Printf("Synced %d active events to Redis", len(eventIDs))
+		if len(eventIDs) > 0 {
+			redisClient.SAdd(ctx, "active_events", eventIDs...)
+			log.Printf("Synced %d active events to Redis", len(eventIDs))
+		}
 	}
 }
 
 func setupEventHooks(app *pocketbase.PocketBase, redisClient *redis.Client) {
-	// When event is created
-	app.OnRecordAfterCreateRequest("events").Add(func(e *core.RecordCreateEvent) error {
-		if e.Record.GetString("status") == "active" {
-			ctx := context.Background()
-			redisClient.SAdd(ctx, "active_events", e.Record.Id)
-			log.Printf("Added new active event to Redis: %s", e.Record.Id)
+	// Hook: OnRecordAfterCreateRequest for "events" collection
+	// This hook fires AFTER a new 'event' record has been successfully created.
+	app.OnRecordCreateRequest("events").BindFunc(func(e *core.RecordRequestEvent) error {
+		// Use e.RequestContext to get the context associated with the current request.
+		// This context will be cancelled if the client disconnects or the request times out.
+		ctx := e.Request.Context() // Use the request context
+
+		eventID := e.Record.Id
+		eventStatus := e.Record.GetString("status")
+
+		if eventStatus == "active" {
+			// Add the event ID to the Redis set of active events
+			if err := redisClient.SAdd(ctx, "active_events", eventID).Err(); err != nil {
+				slog.Error("Failed to add new active event to Redis",
+					"eventID", eventID,
+					"error", err,
+					"hook", "OnRecordAfterCreateRequest",
+				)
+				// Returning an error here would cause the HTTP request to fail.
+				// For Redis sync, often we just log the error and let the request succeed.
+				// Decide based on your application's error handling philosophy.
+				return nil // Don't block the request if Redis sync fails
+			}
+			slog.Info("Added new active event to Redis", "eventID", eventID)
+		} else {
+			slog.Info("New event not active, skipping Redis add", "eventID", eventID, "status", eventStatus)
 		}
 		return nil
 	})
 
-	// When event is updated
-	app.OnRecordAfterUpdateRequest("events").Add(func(e *core.RecordUpdateEvent) error {
-		ctx := context.Background()
+	// Hook: OnRecordAfterUpdateRequest for "events" collection
+	// This hook fires AFTER an 'event' record has been successfully updated.
+	app.OnRecordUpdateRequest("events").BindFunc(func(e *core.RecordRequestEvent) error {
+		ctx := e.Request.Context() // Use the request context
+
 		eventID := e.Record.Id
 		newStatus := e.Record.GetString("status")
+		// If you need the *old* status, you can get it from e.Record.OriginalCopy()
+		// oldStatus := e.Record.OriginalCopy().GetString("status")
 
 		if newStatus == "active" {
-			redisClient.SAdd(ctx, "active_events", eventID)
+			// If the event is now active, ensure it's in the Redis set
+			if err := redisClient.SAdd(ctx, "active_events", eventID).Err(); err != nil {
+				slog.Error("Failed to add updated active event to Redis",
+					"eventID", eventID,
+					"newStatus", newStatus,
+					"error", err,
+					"hook", "OnRecordAfterUpdateRequest",
+				)
+				return nil
+			}
+			slog.Info("Ensured event is active in Redis", "eventID", eventID, "status", newStatus)
 		} else {
-			redisClient.SRem(ctx, "active_events", eventID)
+			// If the event is no longer active (e.g., draft, ended, cancelled), remove it from the Redis set
+			if err := redisClient.SRem(ctx, "active_events", eventID).Err(); err != nil {
+				slog.Error("Failed to remove non-active event from Redis",
+					"eventID", eventID,
+					"newStatus", newStatus,
+					"error", err,
+					"hook", "OnRecordAfterUpdateRequest",
+				)
+				return nil
+			}
+			slog.Info("Removed non-active event from Redis", "eventID", eventID, "status", newStatus)
 		}
-
-		log.Printf("Updated event %s in Redis, status: %s", eventID, newStatus)
 		return nil
 	})
 
-	// When event is deleted
-	app.OnRecordAfterDeleteRequest("events").Add(func(e *core.RecordDeleteEvent) error {
-		ctx := context.Background()
-		redisClient.SRem(ctx, "active_events", e.Record.Id)
-		log.Printf("Removed deleted event from Redis: %s", e.Record.Id)
+	// Hook: OnRecordAfterDeleteRequest for "events" collection
+	// This hook fires AFTER an 'event' record has been successfully deleted.
+	app.OnRecordDeleteRequest("events").BindFunc(func(e *core.RecordRequestEvent) error {
+		ctx := e.Request.Context() // Use the request context
+
+		eventID := e.Record.Id
+
+		// Remove the deleted event ID from the Redis set
+		if err := redisClient.SRem(ctx, "active_events", eventID).Err(); err != nil {
+			slog.Error("Failed to remove deleted event from Redis",
+				"eventID", eventID,
+				"error", err,
+				"hook", "OnRecordAfterDeleteRequest",
+			)
+			return nil
+		}
+		slog.Info("Removed deleted event from Redis", "eventID", eventID)
 		return nil
 	})
 }

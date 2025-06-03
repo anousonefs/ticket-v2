@@ -70,32 +70,38 @@ func (h *SeatHandler) GetSeats(e *core.RequestEvent) error {
 	})
 }
 
-// LockSeatsBatch - Lock multiple seats
-func (h *SeatHandler) LockSeatsBatch(e *core.RequestEvent) error {
+// todo: add session id into seat key
+func (h *SeatHandler) LockSeat(e *core.RequestEvent) error {
 	if e.Auth == nil {
 		return apis.NewUnauthorizedError("Unauthorized", nil)
 	}
 
 	var req struct {
-		EventID string   `json:"event_id"`
-		SeatIDs []string `json:"seat_ids"`
+		EventID string `json:"event_id"`
+		SeatID  string `json:"seat_id"`
 	}
+
 	if err := e.BindBody(&req); err != nil {
 		return apis.NewBadRequestError("Invalid request", err)
 	}
-	ctx := e.Request.Context()
 
-	lockedSeats := []string{}
-	for _, seatID := range req.SeatIDs {
-		if err := h.seatService.LockSeat(ctx, req.EventID, seatID, e.Auth.Id); err == nil {
-			lockedSeats = append(lockedSeats, seatID)
-		}
+	ctx := e.Request.Context()
+	userID := e.Auth.Id
+
+	// Call service to handle business logic
+	err := h.seatService.LockSeatForUser(ctx, req.EventID, req.SeatID, userID)
+	if err != nil {
+		return apis.NewBadRequestError("Failed to lock seat: "+err.Error(), err)
 	}
-	return e.JSON(http.StatusOK, map[string]any{"locked_seats": lockedSeats, "failed_count": len(req.SeatIDs) - len(lockedSeats)})
+
+	return e.JSON(http.StatusOK, map[string]any{
+		"message": "Seat locked successfully",
+		"seat_id": req.SeatID,
+	})
 }
 
 // UnlockSeatsBatch - Unlock multiple seats
-func (h *SeatHandler) UnlockSeatsBatch(e *core.RequestEvent) error {
+func (h *SeatHandler) UnlockSeat(e *core.RequestEvent) error {
 	if e.Auth == nil {
 		return apis.NewUnauthorizedError("Unauthorized", nil)
 	}
