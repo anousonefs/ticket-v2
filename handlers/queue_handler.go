@@ -67,7 +67,8 @@ func (h *QueueHandler) GetQueuePosition(e *core.RequestEvent) error {
 	posKey := fmt.Sprintf("queue:position:%s:%s", eventID, e.Auth.Id)
 	position, err := h.queueService.Redis.Get(ctx, posKey).Int()
 	if err != nil {
-		position = -1
+		slog.Warn("h.queueService.Redis.Get()", "posKey", err)
+		position = 1
 	}
 
 	userKey := fmt.Sprintf("user:queue:%s:%s", eventID, e.Auth.Id)
