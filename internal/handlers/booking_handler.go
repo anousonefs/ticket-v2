@@ -79,7 +79,8 @@ func (h *BookingHandler) ConfirmBooking(e *core.RequestEvent) error {
 	return e.JSON(http.StatusOK, map[string]any{
 		"payment_id": paymentID,
 		"amount":     totalAmount,
-		"booking_id": booking.Id,
+		"book_id":    booking.Id,
+		"success":    true,
 	})
 }
 

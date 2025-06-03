@@ -83,9 +83,9 @@ func LoadConfig() *Config {
 		RedisDB:       getEnvAsInt("REDIS_DB", 0),
 
 		// PubNub
-		PubNubPublishKey:   getEnv("PUBNUB_PUBLISH_KEY", ""),
-		PubNubSubscribeKey: getEnv("PUBNUB_SUBSCRIBE_KEY", ""),
-		PubNubSecretKey:    getEnv("PUBNUB_SECRET_KEY", ""),
+		PubNubPublishKey:   getEnv("PN_PUBLISH_KEY", ""),
+		PubNubSubscribeKey: getEnv("PN_SUBSCRIBE_KEY", ""),
+		PubNubSecretKey:    getEnv("PN_SECRET_KEY", ""),
 
 		// Queue
 		MaxProcessingUsers:  getEnvAsInt("MAX_PROCESSING_USERS", 10),

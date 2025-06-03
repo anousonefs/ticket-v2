@@ -75,10 +75,9 @@ func (s *PaymentService) SubscribeToPaymentNotifications() {
 }
 
 type GenJdbQrRequest struct {
-	EventID string          `json:"event_id"`
-	BookID  string          `json:"book_id"`
-	Phone   string          `json:"phone"`
-	Amount  decimal.Decimal `json:"amount"`
+	BookID string          `json:"book_id"`
+	Phone  string          `json:"phone"`
+	Amount decimal.Decimal `json:"amount"`
 }
 
 func (s *PaymentService) GenJdbQr(ctx context.Context, params GenJdbQrRequest) (string, error) {
