@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"ticket-system/internal/services/bank/jdb"
 	"ticket-system/utils"
 	"time"
@@ -21,12 +21,15 @@ type PaymentService struct {
 	payment *jdb.Yespay
 }
 
-func NewPaymentService(redisClient *redis.Client, pn *pubnub.PubNub, queueService *QueueService, payment *jdb.Yespay) *PaymentService {
+func NewPaymentService(redisClient *redis.Client, pn *pubnub.PubNub, queueService *QueueService, jdbInstance *jdb.Yespay) *PaymentService {
+	if jdbInstance == nil {
+		panic("jdb instance must not be nil")
+	}
 	service := &PaymentService{
 		Redis:   redisClient,
 		PubNub:  pn,
 		queue:   queueService,
-		payment: payment,
+		payment: jdbInstance,
 	}
 
 	go service.SubscribeToPaymentNotifications()
@@ -35,7 +38,7 @@ func NewPaymentService(redisClient *redis.Client, pn *pubnub.PubNub, queueServic
 }
 
 func (s *PaymentService) CreatePaymentSession(ctx context.Context, userID, eventID string, seats []string, amount float64) (string, error) {
-	paymentID := fmt.Sprintf("payment_%s_%d", userID, time.Now().Unix())
+	paymentID, _ := utils.GenerateCode(8)
 
 	paymentData := map[string]any{
 		"payment_id": paymentID,
@@ -59,25 +62,32 @@ func (s *PaymentService) CreatePaymentSession(ctx context.Context, userID, event
 }
 
 func (s *PaymentService) SubscribeToPaymentNotifications() {
-	listener := pubnub.NewListener()
+	if s.payment != nil {
+		go func() {
+			txChannel := make(chan *jdb.Transaction, 1)
+			s.payment.SetTranChannel(txChannel)
+			for {
+				select {
+				case t := <-txChannel:
+					slog.Info("=> yespay retrieve transaction", "txChannel", t)
 
-	s.PubNub.AddListener(listener)
-	s.PubNub.Subscribe().
-		Channels([]string{"bank-payment-notifications"}).
-		Execute()
+					// ctx := context.Background()
+					// if err := s.YesPay(ctx, t.UUID); err != nil {
+					// 	slog.Error("yespay sub paymentService.YesPay()", "error", err)
+					// }
 
-	for {
-		select {
-		case message := <-listener.Message:
-			go s.handlePaymentNotification(message)
-		}
+					go s.handlePaymentNotification(t)
+				}
+			}
+		}()
 	}
 }
 
 type GenJdbQrRequest struct {
-	BookID string          `json:"book_id"`
-	Phone  string          `json:"phone"`
-	Amount decimal.Decimal `json:"amount"`
+	PaymentID string          `json:"payment_id"`
+	BookID    string          `json:"book_id"`
+	Phone     string          `json:"phone"`
+	Amount    decimal.Decimal `json:"amount"`
 }
 
 func (s *PaymentService) GenJdbQr(ctx context.Context, params GenJdbQrRequest) (string, error) {
@@ -87,7 +97,7 @@ func (s *PaymentService) GenJdbQr(ctx context.Context, params GenJdbQrRequest) (
 		Phone:          params.Phone,
 		ReferenceLabel: fmt.Sprintf("%s-%s", params.BookID, refID),
 		TerminalLabel:  refID,
-		UUID:           params.BookID,
+		UUID:           params.PaymentID,
 		Amount:         params.Amount,
 		MerchantID:     "",
 	}
@@ -100,60 +110,102 @@ func (s *PaymentService) GenJdbQr(ctx context.Context, params GenJdbQrRequest) (
 	return envCode, nil
 }
 
-func (s *PaymentService) handlePaymentNotification(message *pubnub.PNMessage) {
-	var notification struct {
-		PaymentID string `json:"payment_id"`
-		Status    string `json:"status"`
-	}
-
-	data, ok := message.Message.(map[string]any)
-	if !ok {
-		return
-	}
-
-	jsonData, _ := json.Marshal(data)
-	if err := json.Unmarshal(jsonData, &notification); err != nil {
-		log.Printf("Error parsing payment notification: %v", err)
-		return
-	}
-
+func (s *PaymentService) handlePaymentNotification(params *jdb.Transaction) {
 	ctx := context.Background()
 
-	if notification.Status == "success" {
-		paymentKey := fmt.Sprintf("payment:%s", notification.PaymentID)
-		paymentData := s.Redis.HGetAll(ctx, paymentKey).Val()
+	paymentKey := fmt.Sprintf("payment:%s", params.RefID)
+	paymentData := s.Redis.HGetAll(ctx, paymentKey).Val()
+	fmt.Printf("=> paymentData: %v\n", paymentData)
 
-		userID := paymentData["user_id"]
-		eventID := paymentData["event_id"]
-		seatsJSON := paymentData["seats"]
+	userID := paymentData["user_id"]
+	eventID := paymentData["event_id"]
+	seatsJSON := paymentData["seats"]
 
-		var seats []string
-		json.Unmarshal([]byte(seatsJSON), &seats)
+	var seats []string
+	json.Unmarshal([]byte(seatsJSON), &seats)
 
-		// todo: use share seatService instance
-		seatService := NewSeatService(s.Redis)
-		for _, seatID := range seats {
-			seatService.MarkSeatAsSold(ctx, eventID, seatID, userID)
-			// todo: update seat status in sql
+	// todo: use share seatService instance
+	seatService := NewSeatService(s.Redis)
+	for _, seatID := range seats {
+		if err := seatService.MarkSeatAsSold(ctx, eventID, seatID, userID); err != nil {
+			slog.Error("seatService.MarkSeatAsSold()", "error", err)
 		}
-
-		s.Redis.HSet(ctx, paymentKey, "status", "completed")
-		// todo: update payment status in sql
-
-		s.queue.RemoveFromProcessing(ctx, eventID, userID)
-
-		// todo: check go context
-		// go s.queue.ProcessQueue(ctx, eventID)
-		s.queue.TriggerProcessQueue(eventID)
-
-		channel := fmt.Sprintf("user-%s", userID)
-		s.PubNub.Publish().
-			Channel(channel).
-			Message(map[string]any{
-				"type":       "payment_success",
-				"payment_id": notification.PaymentID,
-				"seats":      seats,
-			}).
-			Execute()
+		// todo: update seat status in sql
 	}
+
+	s.Redis.HSet(ctx, paymentKey, "status", "completed")
+	// todo: update payment status in sql
+
+	if err := s.queue.RemoveFromProcessing(ctx, eventID, userID); err != nil {
+		slog.Error("payment.s.queue.RemoveFromProcessing()", "error", err)
+	}
+
+	// todo: check go context
+	// go s.queue.ProcessQueue(ctx, eventID)
+	s.queue.TriggerProcessQueue(eventID)
+
+	channel := fmt.Sprintf("user-%s", userID)
+	s.PubNub.Publish().
+		Channel(channel).
+		Message(map[string]any{
+			"type":       "payment_success",
+			"payment_id": params.RefID,
+			"seats":      seats,
+		}).
+		Execute()
+}
+
+func (s *PaymentService) YesPay(ctx context.Context, uuid string) error {
+	// check payment by uuid
+
+	// check book
+
+	// t := Transaction{
+	// 	RefID:         tran.RefID,
+	// 	UUID:          tran.UUID,
+	// 	FCCRef:        tran.FCCRef,
+	// 	Payer:         tran.Payer,
+	// 	Amount:        tran.Amount,
+	// 	Ccy:           tran.Ccy,
+	// 	AccountNumber: tran.AccountNumber,
+	// 	PayType:       PayTypeLAPNet,
+	// 	Description:   couponCode,
+	// 	CreatedAt:     tran.CreatedAt,
+	// }
+	// if err := s.r.Store(ctx, &t); err != nil {
+	// 	return fmt.Errorf("s.r.Store: %w", err)
+	// }
+
+	// book.Status = domain.BookStatusSuccess
+	// if !tran.Amount.Equal(book.Amount()) {
+	// 	book.Status = domain.BookStatusDenied
+	// }
+	// book.UpdatedAt = domain.NowPtr()
+	// book.IsSuccessPayment = true
+	// if err := s.bookRepo.Update(ctx, book); err != nil {
+	// 	return fmt.Errorf("s.bookRepo.Update: %w", err)
+	// }
+
+	// messagePayloadPayment := publishMessage{
+	// 	UUID:    book.ID,
+	// 	Code:    http.StatusOK,
+	// 	Status:  "OK",
+	// 	Message: messagePayment,
+	// }
+	// go func() {
+	// 	result, err := s.publishMessage(ctx, book.ID, &messagePayloadPayment)
+	// 	if err != nil {
+	// 		log.Printf("Publish message payment failed: %v", err)
+	// 		return
+	// 	}
+	// 	log.Println("Publish message payment successful:", result)
+	// }()
+
+	// result, err := s.sendNotification(ctx, book, notFree)
+	// if err != nil {
+	// 	log.Printf("Send notification failed: %v", err)
+	// }
+	// log.Printf("Send notification successful: %v", result)
+
+	return nil
 }

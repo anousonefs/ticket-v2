@@ -53,23 +53,6 @@ func Start() error {
 		return err
 	}
 
-	if jdbInstance != nil {
-		go func() {
-			txChannel := make(chan *jdb.Transaction, 1)
-			jdbInstance.SetTranChannel(txChannel)
-			for {
-				select {
-				case t := <-txChannel:
-					slog.Info("=> yespay retrieve transaction", "txChannel", t)
-
-					// if err := tranService.YesPay(ctx, t.UUID); err != nil {
-					// 	slog.Error("transService.YesPay()", "error", err)
-					// }
-				}
-			}
-		}()
-	}
-
 	// Initialize services
 	queueService := services.NewQueueService(redisClient, pn, cfg)
 	seatService := services.NewSeatService(redisClient)
