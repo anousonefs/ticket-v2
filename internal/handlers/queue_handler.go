@@ -58,7 +58,6 @@ func (h *QueueHandler) EnterQueue(e *core.RequestEvent) error {
 		return apis.NewBadRequestError("Already in queue", nil)
 	}
 
-	println("start service enq")
 	if err := h.queueService.EnqueueUserAtomic(ctx, req.EventID, userID, req.SessionID); err != nil {
 		return apis.NewBadRequestError("Failed to join queue", err)
 	}

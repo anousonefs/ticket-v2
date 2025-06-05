@@ -138,73 +138,6 @@ func (s *PaymentService) GenJdbQr(ctx context.Context, params GenJdbQrRequest) (
 	return envCode, nil
 }
 
-func (s *PaymentService) SubscribeToPaymentNotifications() {
-	if s.payment != nil {
-		go func() {
-			txChannel := make(chan *jdb.Transaction, 1)
-			s.payment.SetTranChannel(txChannel)
-			for {
-				select {
-				case t := <-txChannel:
-					slog.Info("=> yespay retrieve transaction", "txChannel", t)
-
-					// ctx := context.Background()
-					// if err := s.YesPay(ctx, t.UUID); err != nil {
-					// 	slog.Error("yespay sub paymentService.YesPay()", "error", err)
-					// }
-
-					go s.handlePaymentNotification(t)
-				}
-			}
-		}()
-	}
-}
-
-func (s *PaymentService) handlePaymentNotification(params *jdb.Transaction) {
-	ctx := context.Background()
-
-	paymentKey := fmt.Sprintf("payment:%s", params.RefID)
-	paymentData := s.Redis.HGetAll(ctx, paymentKey).Val()
-	fmt.Printf("=> paymentData: %v\n", paymentData)
-
-	userID := paymentData["user_id"]
-	eventID := paymentData["event_id"]
-	seatsJSON := paymentData["seats"]
-
-	var seats []string
-	json.Unmarshal([]byte(seatsJSON), &seats)
-
-	// todo: use share seatService instance
-	seatService := NewSeatService(s.Redis)
-	for _, seatID := range seats {
-		if err := seatService.MarkSeatAsSold(ctx, eventID, seatID, userID); err != nil {
-			slog.Error("seatService.MarkSeatAsSold()", "error", err)
-		}
-		// todo: update seat status in sql
-	}
-
-	s.Redis.HSet(ctx, paymentKey, "status", "completed")
-	// todo: update payment status in sql
-
-	if err := s.queue.RemoveFromProcessing(ctx, eventID, userID); err != nil {
-		slog.Error("payment.s.queue.RemoveFromProcessing()", "error", err)
-	}
-
-	// todo: check go context
-	// go s.queue.ProcessQueue(ctx, eventID)
-	s.queue.TriggerProcessQueue(eventID)
-
-	channel := fmt.Sprintf("user-%s", userID)
-	s.PubNub.Publish().
-		Channel(channel).
-		Message(map[string]any{
-			"type":       "payment_success",
-			"payment_id": params.RefID,
-			"seats":      seats,
-		}).
-		Execute()
-}
-
 // PaymentData represents payment information stored in Redis
 type PaymentData struct {
 	UserID    string   `json:"user_id"`
@@ -214,8 +147,6 @@ type PaymentData struct {
 	Status    string   `json:"status"`
 	CreatedAt string   `json:"created_at"`
 }
-
-// PaymentNotification represents the notification payload
 
 // SubscribeToPaymentNotifications starts listening for payment notifications
 func (s *PaymentService) SubscribeToPaymentNotifications2() {
