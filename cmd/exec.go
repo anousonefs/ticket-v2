@@ -56,7 +56,7 @@ func Start() error {
 	// Initialize services
 	queueService := services.NewQueueService(redisClient, pn, cfg)
 	seatService := services.NewSeatService(redisClient)
-	paymentService := services.NewPaymentService(redisClient, pn, queueService, jdbInstance)
+	paymentService := services.NewPaymentService(redisClient, pn, queueService, jdbInstance, seatService)
 
 	// Initialize handlers
 	queueHandler := handlers.NewQueueHandler(app, queueService)
@@ -86,6 +86,7 @@ func Start() error {
 		e.Router.GET("/api/v1/queue/position", queueHandler.GetQueuePosition)
 		e.Router.GET("/api/v1/queue/metrics", queueHandler.GetQueueMetrics)
 		e.Router.POST("/api/v1/queue/leave", queueHandler.LeaveQueue)
+		e.Router.POST("/api/v1/queue/leave2", queueHandler.LeaveQueue2)
 		e.Router.GET("/api/v1/events/{eventId}/waiting", queueHandler.GetWaitingPage)
 
 		// Seat endpoints

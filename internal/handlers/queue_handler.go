@@ -2,6 +2,7 @@
 package handlers
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -26,30 +27,43 @@ func NewQueueHandler(app *pocketbase.PocketBase, queueService *services.QueueSer
 
 // EnterQueue - Enter the queue endpoint
 func (h *QueueHandler) EnterQueue(e *core.RequestEvent) error {
-	if e.Auth == nil {
-		return apis.NewUnauthorizedError("Unauthorized", nil)
-	}
+	println("start enter queue")
+	// if e.Auth == nil {
+	// 	return apis.NewUnauthorizedError("Unauthorized", nil)
+	// }
 
 	var req struct {
 		EventID   string `json:"event_id"`
 		SessionID string `json:"session_id"`
+		UserID    string `json:"user_id"`
 	}
+
 	if err := e.BindBody(&req); err != nil {
 		return apis.NewBadRequestError("Invalid request", err)
 	}
+
+	userID := req.UserID
+	fmt.Printf("=> userID: %v\n", userID)
+
+	if req.UserID == "" {
+		slog.Info("user id is empty")
+		return apis.NewBadRequestError("Invalid request", errors.New("user id must not empty"))
+	}
+
 	ctx := e.Request.Context()
 
-	userKey := fmt.Sprintf("user:queue:%s:%s", req.EventID, e.Auth.Id)
+	userKey := fmt.Sprintf("user:queue:%s:%s", req.EventID, userID)
 	exists, _ := h.queueService.Redis.Exists(ctx, userKey).Result()
 	if exists > 0 {
 		return apis.NewBadRequestError("Already in queue", nil)
 	}
 
-	if err := h.queueService.EnqueueUserAtomic(ctx, req.EventID, e.Auth.Id, req.SessionID); err != nil {
+	println("start service enq")
+	if err := h.queueService.EnqueueUserAtomic(ctx, req.EventID, userID, req.SessionID); err != nil {
 		return apis.NewBadRequestError("Failed to join queue", err)
 	}
 
-	return e.JSON(http.StatusOK, map[string]any{"message": "Successfully joined queue", "user_id": e.Auth.Id})
+	return e.JSON(http.StatusOK, map[string]any{"message": "Successfully joined queue", "user_id": userID})
 }
 
 // GetQueuePosition - Get current queue position
@@ -123,6 +137,28 @@ func (h *QueueHandler) LeaveQueue(e *core.RequestEvent) error {
 
 	if status == "processing" {
 		h.queueService.RemoveFromProcessing(ctx, req.EventID, e.Auth.Id)
+	} else if status == "waiting" {
+		h.queueService.Redis.Del(ctx, userKey)
+	}
+
+	return e.JSON(http.StatusOK, map[string]any{"message": "Successfully left queue"})
+}
+
+func (h *QueueHandler) LeaveQueue2(e *core.RequestEvent) error {
+	var req struct {
+		EventID string `json:"event_id"`
+		UserID  string `json:"user_id"`
+	}
+	if err := e.BindBody(&req); err != nil {
+		return apis.NewBadRequestError("Invalid request", err)
+	}
+	ctx := e.Request.Context()
+
+	userKey := fmt.Sprintf("user:queue:%s:%s", req.EventID)
+	status, _ := h.queueService.Redis.HGet(ctx, userKey, "status").Result()
+
+	if status == "processing" {
+		h.queueService.RemoveFromProcessing(ctx, req.EventID, req.UserID)
 	} else if status == "waiting" {
 		h.queueService.Redis.Del(ctx, userKey)
 	}
