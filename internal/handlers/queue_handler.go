@@ -157,7 +157,8 @@ func (h *QueueHandler) LeaveQueue2(e *core.RequestEvent) error {
 	status, _ := h.queueService.Redis.HGet(ctx, userKey, "status").Result()
 
 	if status == "processing" {
-		h.queueService.RemoveFromProcessing(ctx, req.EventID, req.UserID)
+		_ = h.queueService.RemoveFromProcessing(ctx, req.EventID, req.UserID)
+		h.queueService.TriggerProcessQueue(req.EventID)
 	} else if status == "waiting" {
 		h.queueService.Redis.Del(ctx, userKey)
 	}

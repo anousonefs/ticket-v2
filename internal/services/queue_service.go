@@ -630,6 +630,7 @@ func (s *QueueService) ProcessQueue(ctx context.Context, eventID string) {
 			continue
 		}
 
+		slog.Info("=> process queue", "user id", entry.UserID)
 		// Move to processing
 		s.moveUserToProcessingAtomic(ctx, eventID, entry)
 	}
@@ -903,15 +904,18 @@ func (s *QueueService) UpdateQueuePositions(ctx context.Context) {
 }
 
 func (s *QueueService) updatePositions(ctx context.Context) {
+	slog.Info("=> start update queue positions")
 	// Get all event queues
 	keys, err := s.Redis.Keys(ctx, "queue:waiting:*").Result()
 	if err != nil {
 		log.Printf("Error getting queue keys: %v", err)
 		return
 	}
+	slog.Info("keys", "info", keys)
 
 	for _, key := range keys {
 		eventID := key[len("queue:waiting:"):]
+		slog.Info("eventId", eventID)
 
 		// Get all queue entries (FIFO order)
 		entries, err := s.Redis.LRange(ctx, key, 0, -1).Result()

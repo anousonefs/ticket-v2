@@ -88,7 +88,7 @@ func LoadConfig() *Config {
 		PubNubSecretKey:    getEnv("PN_SECRET_KEY", ""),
 
 		// Queue
-		MaxProcessingUsers:  getEnvAsInt("MAX_PROCESSING_USERS", 1),
+		MaxProcessingUsers:  getEnvAsInt("MAX_PROCESSING_USERS", 5),
 		QueuePositionUpdate: getEnvAsDuration("QUEUE_POSITION_UPDATE", "2s"),
 
 		// Timeouts
