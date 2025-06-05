@@ -89,7 +89,7 @@ func LoadConfig() *Config {
 
 		// Queue
 		MaxProcessingUsers:  getEnvAsInt("MAX_PROCESSING_USERS", 5),
-		QueuePositionUpdate: getEnvAsDuration("QUEUE_POSITION_UPDATE", "2s"),
+		QueuePositionUpdate: getEnvAsDuration("QUEUE_POSITION_UPDATE", "5s"),
 
 		// Timeouts
 		SeatLockTimeout:   getEnvAsDuration("SEAT_LOCK_TIMEOUT", "5m"),
