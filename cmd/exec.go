@@ -17,8 +17,6 @@ import (
 	"ticket-system/utils"
 	"time"
 
-	"github.com/pocketbase/dbx"
-
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/plugins/migratecmd"
 	pubnub "github.com/pubnub/go"
@@ -71,7 +69,7 @@ func Start() error {
 	})
 
 	// Start background tasks
-	go queueService.UpdateQueuePositions(ctx)
+	go queueService.UpdateQueuePositions2(ctx)
 	go queueService.CleanupInactiveQueues(ctx)
 
 	// Setup graceful shutdown
@@ -145,31 +143,25 @@ func Start() error {
 func syncActiveEventsToRedis(app *pocketbase.PocketBase, redisClient *redis.Client) {
 	ctx := context.Background()
 
-	// Get active events from database (latest PocketBase version)
-	var records []dbx.NullStringMap
-	if err := app.DB().NewQuery(
-		"SELECT id FROM events WHERE status = 'publish'",
-	).All(&records); err != nil {
-		log.Printf("Error fetching active events: %v", err)
+	keys, err := redisClient.Keys(ctx, "queue:waiting:*").Result()
+	if err != nil {
+		log.Printf("Error getting queue keys: %v", err)
 		return
 	}
 
-	// Clear existing active_events set
-	redisClient.Del(ctx, "active_events")
+	for _, key := range keys {
+		eventID := key[len("queue:waiting:"):]
 
-	// Add active events to Redis set
-	if len(records) > 0 {
-		var eventIDs []interface{}
-		for _, record := range records {
-			if id := record["id"].String; id != "" {
-				eventIDs = append(eventIDs, id)
-			}
+		entries, err := redisClient.LRange(ctx, key, 0, -1).Result()
+		if err != nil {
+			continue
 		}
 
-		if len(eventIDs) > 0 {
-			redisClient.SAdd(ctx, "active_events", eventIDs...)
-			log.Printf("Synced %d active events to Redis", len(eventIDs))
+		if len(entries) > 0 {
+			redisClient.SAdd(ctx, "active_events", eventID)
+			log.Printf("Synced %d active events to Redis", eventID)
 		}
+
 	}
 }
 

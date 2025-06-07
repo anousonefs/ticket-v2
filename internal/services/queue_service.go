@@ -141,6 +141,10 @@ func (s *QueueService) EnqueueUserAtomic(ctx context.Context, eventID, userID, s
 
 	// Only ONE goroutine per event will have shouldTrigger=1
 	if shouldTrigger == 1 {
+		time.Sleep(2 * time.Second)
+		if err := s.Redis.SAdd(ctx, "active_events", eventID).Err(); err != nil {
+			slog.Error("s.Redis.SAdd(): active_events", "eventId", eventID, "error", err)
+		}
 		slog.Info("<==> SINGLE ProcessQueue trigger for event", eventID, "userId", userID)
 		go func() {
 			defer func() {
@@ -298,6 +302,7 @@ func (s *QueueService) processQueuePositionUpdates(ctx context.Context) {
 		log.Printf("Error getting active events: %v", err)
 		return
 	}
+	slog.Info("=> process queue eventIds", "eventId", eventIDs)
 
 	// Process each event's queue in parallel with controlled concurrency
 	var wg sync.WaitGroup
@@ -307,6 +312,7 @@ func (s *QueueService) processQueuePositionUpdates(ctx context.Context) {
 		wg.Add(1)
 		semaphore <- struct{}{} // Acquire semaphore
 
+		slog.Info("=> process queue position", "eventId", eventID)
 		go func(eventID string) {
 			defer wg.Done()
 			defer func() { <-semaphore }() // Release semaphore
@@ -329,9 +335,15 @@ func (s *QueueService) updateEventQueuePositions(ctx context.Context, eventID st
 		return
 	}
 
+	for i := len(entries)/2 - 1; i >= 0; i-- {
+		opp := len(entries) - 1 - i
+		entries[i], entries[opp] = entries[opp], entries[i]
+	}
+
+	slog.Info("after reverse entries", "info", entries)
+
 	// If queue is empty, remove from active events
 	if len(entries) == 0 {
-		s.Redis.SRem(ctx, "active_events", eventID)
 		// Clean up queue metrics
 		s.Redis.Del(ctx, fmt.Sprintf("queue:metrics:%s", eventID))
 		return
@@ -349,6 +361,7 @@ func (s *QueueService) updateEventQueuePositions(ctx context.Context, eventID st
 			log.Printf("Error unmarshaling queue entry: %v", err)
 			continue
 		}
+		slog.Info("=> entry", "userid", entry.UserID, "position", i+1)
 
 		// Position is i + 1 (1-based indexing for user display)
 		position := i + 1
@@ -364,9 +377,10 @@ func (s *QueueService) updateEventQueuePositions(ctx context.Context, eventID st
 
 		// Add to batch update
 		updates = append(updates, map[string]any{
-			"user_id":   entry.UserID,
-			"position":  position,
-			"wait_time": int(waitTime.Seconds()),
+			"userId":   entry.UserID,
+			"position": position,
+			"status":   "waiting",
+			"waitTime": int(waitTime.Seconds()),
 		})
 	}
 
@@ -374,16 +388,16 @@ func (s *QueueService) updateEventQueuePositions(ctx context.Context, eventID st
 	if len(updates) > 0 {
 		// Send to event channel for all users watching this event
 		eventChannel := fmt.Sprintf("event-%s-queue", eventID)
+		slog.Info("=> send PN", "channel", eventChannel)
 		s.PubNub.Publish().
 			Channel(eventChannel).
 			Message(map[string]any{
-				"type":     "queue_positions_batch",
-				"event_id": eventID,
-				"updates":  updates,
-				"total":    len(entries),
+				"type":    "queue_positions_batch",
+				"eventId": eventID,
+				"updates": updates,
+				"total":   len(entries),
 			}).
 			Execute()
-
 	}
 
 	// Update queue metrics
@@ -720,6 +734,7 @@ func (s *QueueService) moveUserToProcessingAtomic(ctx context.Context, eventID s
 		entry.UserID, added, fieldsSet, processingCount)
 
 	// Notify user (async, don't block)
+	slog.Info("=> notify user", "userId", entry.UserID)
 	go s.notifyUserProcessing(context.Background(), entry.UserID, eventID)
 
 	return nil
@@ -736,7 +751,6 @@ func (s *QueueService) notifyUserProcessing(_ context.Context, userID, eventID s
 		"timestamp": time.Now().Unix(),
 		"data": map[string]any{
 			"seat_selection_url": fmt.Sprintf("/events/%s/seats", eventID),
-			"timeout_minutes":    5, // User has 5 minutes to select seats
 		},
 	}
 
@@ -943,10 +957,15 @@ func (s *QueueService) updatePositions(ctx context.Context) {
 				s.PubNub.Publish().
 					Channel(channel).
 					Message(map[string]any{
-						"type":     "queue_position",
-						"position": position,
-						"event_id": eventID,
-						"message":  fmt.Sprintf("You are #%d in line", position),
+						"type":                        "queue_position",
+						"status":                      "waiting",
+						"position":                    position,
+						"event_id":                    eventID,
+						"message":                     fmt.Sprintf("You are #%d in line", position),
+						"estimated_wait_time_minutes": 2 * position,
+						"data": map[string]string{
+							"position": string(position),
+						},
 					}).
 					Execute()
 			}
@@ -1102,7 +1121,7 @@ func (qs *QueueService) GetWaitingPageInfo(ctx context.Context, eventID string) 
 	// 	return nil, fmt.Errorf("qs.redis.Get(saleStartKey: %v): %w", saleStartKey, err)
 	// }
 
-	startTime := "2025-06-02T21:30:05+07:00"
+	startTime := "2025-06-06T16:02:15+07:00"
 
 	saleStartTime, err := time.Parse(time.RFC3339, startTime)
 	if err != nil {
