@@ -150,6 +150,7 @@ func (l *ldb) GenQRCode(ctx context.Context, f *LDBQRForm) (string, error) {
 			BackInfo:   "ewent.la",
 		},
 	}
+	fmt.Printf("body: %+v\n", q)
 
 	emvCode, err := l.getQRFromLDB(ctx, &q)
 	if err != nil {

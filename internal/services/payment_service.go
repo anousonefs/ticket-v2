@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
 	// Adjust import path
 
 	pubnub "github.com/pubnub/go"
@@ -128,13 +129,15 @@ type QRRequest struct {
 func (s *PaymentService) GenQR(ctx context.Context, params QRRequest) (string, error) {
 	refID, _ := utils.GenerateCode(4)
 
-	// todo: fix this
 	paymentReq := &bank.PaymentRequest{
 		Phone:           params.Phone,
-		ReferenceNumber: fmt.Sprintf("%s-%s", params.BookID, refID),
+		ReferenceNumber: refID,
 		TerminalLabel:   refID,
-		UUID:            params.PaymentID,
+		UUID:            params.BookID,
 		Amount:          params.Amount,
+		Currency:        "LAK",
+		Description:     "enter event",
+		IsDeepLink:      true,
 		MerchantID:      "",
 	}
 
@@ -142,12 +145,16 @@ func (s *PaymentService) GenQR(ctx context.Context, params QRRequest) (string, e
 	switch params.BankName {
 	case bank.BankJDB:
 		bankName = bank.BankJDB
+		slog.Info("bank name", "name", bank.BankJDB)
 	case bank.BankLDB:
+		slog.Info("bank name", "name", bank.BankLDB)
 		bankName = bank.BankLDB
 	case bank.BankBCEL:
 		bankName = bank.BankBCEL
+		slog.Info("bank name", "name", bank.BankBCEL)
 	default:
 		bankName = bank.BankJDB
+		slog.Info("default bank name", "name", bank.BankJDB)
 	}
 
 	bank, err := s.banks.GetBank(bankName)

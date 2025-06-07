@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"ticket-system/internal/services/bank/ldb"
 	"ticket-system/internal/status"
+
+	"github.com/google/uuid"
 )
 
 // LDBAdapter wraps the existing LDB implementation to conform to BankInterface
@@ -36,6 +38,8 @@ func (l *LDBAdapter) GenerateQR(ctx context.Context, req *PaymentRequest) (strin
 		expiryTime = "5" // Default 5 minutes
 	}
 
+	reqTxUUID := uuid.New().String()
+
 	form := &ldb.LDBQRForm{
 		ExpiryTime:      expiryTime,
 		TxCount:         "1",
@@ -47,7 +51,7 @@ func (l *LDBAdapter) GenerateQR(ctx context.Context, req *PaymentRequest) (strin
 		Memo:            req.Description,
 		IsDeepLink:      req.IsDeepLink,
 		MerchantID:      req.MerchantID,
-		ReqTxUUID:       req.UUID, // Use same UUID for request transaction
+		ReqTxUUID:       reqTxUUID, // Use same UUID for request transaction
 	}
 
 	return l.client.GenQRCode(ctx, form)
