@@ -1,4 +1,4 @@
-package services
+package bank
 
 import (
 	"context"
@@ -26,7 +26,7 @@ type PaymentRequest struct {
 	MerchantID      string          `json:"merchant_id,omitempty"`
 	ExpiryMinutes   string          `json:"expiry_minutes,omitempty"`
 	Description     string          `json:"description,omitempty"`
-	
+
 	// Bank-specific fields
 	TerminalLabel string `json:"terminal_label,omitempty"` // JDB specific
 	IsDeepLink    bool   `json:"is_deep_link,omitempty"`   // LDB specific
@@ -65,3 +65,4 @@ type BankFactory interface {
 	CreateBank(ctx context.Context, provider BankProvider, config interface{}) (BankInterface, error)
 	GetSupportedProviders() []BankProvider
 }
+

@@ -3,7 +3,6 @@ package bank
 import (
 	"context"
 	"fmt"
-	"ticket-system/internal/services"
 	"ticket-system/internal/services/bank/jdb"
 	"ticket-system/internal/services/bank/ldb"
 
@@ -25,8 +24,8 @@ func ExampleUsage(ctx context.Context) error {
 		ReceiverID: "your-receiver-id",
 		// ... other JDB config fields
 	}
-	
-	if err := registry.RegisterBank(ctx, services.BankJDB, jdbConfig); err != nil {
+
+	if err := registry.RegisterBank(ctx, BankJDB, jdbConfig); err != nil {
 		return fmt.Errorf("failed to register JDB bank: %w", err)
 	}
 
@@ -39,13 +38,13 @@ func ExampleUsage(ctx context.Context) error {
 		MerchantID:     "your-merchant-id",
 		// ... other LDB config fields
 	}
-	
-	if err := registry.RegisterBank(ctx, services.BankLDB, ldbConfig); err != nil {
+
+	if err := registry.RegisterBank(ctx, BankLDB, ldbConfig); err != nil {
 		return fmt.Errorf("failed to register LDB bank: %w", err)
 	}
 
 	// 5. Set primary bank (optional - first registered bank becomes primary by default)
-	if err := registry.SetPrimaryBank(services.BankJDB); err != nil {
+	if err := registry.SetPrimaryBank(BankJDB); err != nil {
 		return fmt.Errorf("failed to set primary bank: %w", err)
 	}
 
@@ -53,7 +52,7 @@ func ExampleUsage(ctx context.Context) error {
 	// paymentService := services.NewPaymentServiceWithBanks(redisClient, pubnub, queueService, registry, seatService)
 
 	// 7. Generate QR code using specific bank
-	paymentReq := &services.PaymentRequest{
+	paymentReq := &PaymentRequest{
 		Amount:          decimal.NewFromFloat(100000), // 100,000 LAK
 		Currency:        "LAK",
 		UUID:            "payment-123",
@@ -62,11 +61,11 @@ func ExampleUsage(ctx context.Context) error {
 	}
 
 	// Generate QR using JDB
-	jdbBank, err := registry.GetBank(services.BankJDB)
+	jdbBank, err := registry.GetBank(BankJDB)
 	if err != nil {
 		return err
 	}
-	
+
 	qrCodeJDB, err := jdbBank.GenerateQR(ctx, paymentReq)
 	if err != nil {
 		return fmt.Errorf("failed to generate JDB QR: %w", err)
@@ -74,11 +73,11 @@ func ExampleUsage(ctx context.Context) error {
 	fmt.Printf("JDB QR Code: %s\n", qrCodeJDB)
 
 	// Generate QR using LDB
-	ldbBank, err := registry.GetBank(services.BankLDB)
+	ldbBank, err := registry.GetBank(BankLDB)
 	if err != nil {
 		return err
 	}
-	
+
 	qrCodeLDB, err := ldbBank.GenerateQR(ctx, paymentReq)
 	if err != nil {
 		return fmt.Errorf("failed to generate LDB QR: %w", err)
@@ -109,50 +108,51 @@ func ExampleWithPaymentService(ctx context.Context) {
 	// This example shows how you would integrate with the existing payment service
 
 	/*
-	// 1. Create bank registry (as shown above)
-	registry := createBankRegistry(ctx)
-	
-	// 2. Create payment service
-	paymentService := services.NewPaymentServiceWithBanks(
-		redisClient, 
-		pubnubClient, 
-		queueService, 
-		registry, 
-		seatService,
-	)
+		// 1. Create bank registry (as shown above)
+		registry := createBankRegistry(ctx)
 
-	// 3. Generate QR using payment service (will use primary bank by default)
-	qrReq := services.GenerateQRRequest{
-		PaymentID: "payment-123",
-		BookID:    "book-456", 
-		Phone:     "8562012345678",
-		Amount:    decimal.NewFromFloat(100000),
-		Currency:  "LAK",
-		// BankProvider: services.BankJDB, // Optional: specify bank, otherwise uses primary
-	}
+		// 2. Create payment service
+		paymentService := services.NewPaymentServiceWithBanks(
+			redisClient,
+			pubnubClient,
+			queueService,
+			registry,
+			seatService,
+		)
 
-	qrCode, err := paymentService.GenerateQRWithBank(ctx, qrReq)
-	if err != nil {
-		log.Printf("Failed to generate QR: %v", err)
-		return
-	}
+		// 3. Generate QR using payment service (will use primary bank by default)
+		qrReq := services.GenerateQRRequest{
+			PaymentID: "payment-123",
+			BookID:    "book-456",
+			Phone:     "8562012345678",
+			Amount:    decimal.NewFromFloat(100000),
+			Currency:  "LAK",
+			// BankProvider: services.BankJDB, // Optional: specify bank, otherwise uses primary
+		}
 
-	// 4. Get available banks
-	availableBanks := paymentService.GetAvailableBanks()
-	log.Printf("Available banks: %v", availableBanks)
+		qrCode, err := paymentService.GenerateQRWithBank(ctx, qrReq)
+		if err != nil {
+			log.Printf("Failed to generate QR: %v", err)
+			return
+		}
 
-	// 5. Switch primary bank
-	err = paymentService.SetPrimaryBank(services.BankLDB)
-	if err != nil {
-		log.Printf("Failed to set primary bank: %v", err)
-	}
+		// 4. Get available banks
+		availableBanks := paymentService.GetAvailableBanks()
+		log.Printf("Available banks: %v", availableBanks)
 
-	// 6. Check transaction with specific bank
-	status, err := paymentService.CheckTransactionWithBank(ctx, services.BankJDB, "payment-123")
-	if err != nil {
-		log.Printf("Failed to check transaction: %v", err)
-		return
-	}
-	log.Printf("Transaction status: %+v", status)
+		// 5. Switch primary bank
+		err = paymentService.SetPrimaryBank(services.BankLDB)
+		if err != nil {
+			log.Printf("Failed to set primary bank: %v", err)
+		}
+
+		// 6. Check transaction with specific bank
+		status, err := paymentService.CheckTransactionWithBank(ctx, services.BankJDB, "payment-123")
+		if err != nil {
+			log.Printf("Failed to check transaction: %v", err)
+			return
+		}
+		log.Printf("Transaction status: %+v", status)
 	*/
 }
+

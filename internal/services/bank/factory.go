@@ -3,7 +3,6 @@ package bank
 import (
 	"context"
 	"fmt"
-	"ticket-system/internal/services"
 	"ticket-system/internal/services/bank/jdb"
 	"ticket-system/internal/services/bank/ldb"
 )
@@ -17,23 +16,23 @@ func NewFactory() *Factory {
 }
 
 // CreateBank creates a bank instance based on provider type and configuration
-func (f *Factory) CreateBank(ctx context.Context, provider services.BankProvider, config interface{}) (services.BankInterface, error) {
+func (f *Factory) CreateBank(ctx context.Context, provider BankProvider, config interface{}) (BankInterface, error) {
 	switch provider {
-	case services.BankJDB:
+	case BankJDB:
 		jdbConfig, ok := config.(*jdb.Config)
 		if !ok {
 			return nil, fmt.Errorf("invalid JDB config type, expected *jdb.Config")
 		}
 		return NewJDBAdapter(ctx, jdbConfig)
 
-	case services.BankLDB:
+	case BankLDB:
 		ldbConfig, ok := config.(*ldb.Config)
 		if !ok {
 			return nil, fmt.Errorf("invalid LDB config type, expected *ldb.Config")
 		}
 		return NewLDBAdapter(ctx, ldbConfig)
 
-	case services.BankBCEL:
+	case BankBCEL:
 		// TODO: Implement BCEL adapter when BCEL client is available
 		return nil, fmt.Errorf("BCEL bank provider not implemented yet")
 
@@ -43,38 +42,38 @@ func (f *Factory) CreateBank(ctx context.Context, provider services.BankProvider
 }
 
 // GetSupportedProviders returns list of supported bank providers
-func (f *Factory) GetSupportedProviders() []services.BankProvider {
-	return []services.BankProvider{
-		services.BankJDB,
-		services.BankLDB,
+func (f *Factory) GetSupportedProviders() []BankProvider {
+	return []BankProvider{
+		BankJDB,
+		BankLDB,
 		// services.BankBCEL, // TODO: Add when implemented
 	}
 }
 
 // BankRegistry manages multiple bank instances
 type BankRegistry struct {
-	banks   map[services.BankProvider]services.BankInterface
-	factory services.BankFactory
-	primary services.BankProvider
+	banks   map[BankProvider]BankInterface
+	factory BankFactory
+	primary BankProvider
 }
 
 // NewBankRegistry creates a new bank registry
-func NewBankRegistry(factory services.BankFactory) *BankRegistry {
+func NewBankRegistry(factory BankFactory) *BankRegistry {
 	return &BankRegistry{
-		banks:   make(map[services.BankProvider]services.BankInterface),
+		banks:   make(map[BankProvider]BankInterface),
 		factory: factory,
 	}
 }
 
 // RegisterBank registers a bank instance
-func (r *BankRegistry) RegisterBank(ctx context.Context, provider services.BankProvider, config interface{}) error {
+func (r *BankRegistry) RegisterBank(ctx context.Context, provider BankProvider, config interface{}) error {
 	bank, err := r.factory.CreateBank(ctx, provider, config)
 	if err != nil {
 		return fmt.Errorf("failed to create %s bank: %w", provider, err)
 	}
 
 	r.banks[provider] = bank
-	
+
 	// Set first registered bank as primary
 	if r.primary == "" {
 		r.primary = provider
@@ -84,7 +83,7 @@ func (r *BankRegistry) RegisterBank(ctx context.Context, provider services.BankP
 }
 
 // GetBank returns a bank instance by provider
-func (r *BankRegistry) GetBank(provider services.BankProvider) (services.BankInterface, error) {
+func (r *BankRegistry) GetBank(provider BankProvider) (BankInterface, error) {
 	bank, exists := r.banks[provider]
 	if !exists {
 		return nil, fmt.Errorf("bank provider %s not registered", provider)
@@ -93,7 +92,7 @@ func (r *BankRegistry) GetBank(provider services.BankProvider) (services.BankInt
 }
 
 // GetPrimaryBank returns the primary bank instance
-func (r *BankRegistry) GetPrimaryBank() (services.BankInterface, error) {
+func (r *BankRegistry) GetPrimaryBank() (BankInterface, error) {
 	if r.primary == "" {
 		return nil, fmt.Errorf("no primary bank configured")
 	}
@@ -101,7 +100,7 @@ func (r *BankRegistry) GetPrimaryBank() (services.BankInterface, error) {
 }
 
 // SetPrimaryBank sets the primary bank provider
-func (r *BankRegistry) SetPrimaryBank(provider services.BankProvider) error {
+func (r *BankRegistry) SetPrimaryBank(provider BankProvider) error {
 	if _, exists := r.banks[provider]; !exists {
 		return fmt.Errorf("bank provider %s not registered", provider)
 	}
@@ -110,8 +109,8 @@ func (r *BankRegistry) SetPrimaryBank(provider services.BankProvider) error {
 }
 
 // GetAvailableBanks returns list of registered bank providers
-func (r *BankRegistry) GetAvailableBanks() []services.BankProvider {
-	providers := make([]services.BankProvider, 0, len(r.banks))
+func (r *BankRegistry) GetAvailableBanks() []BankProvider {
+	providers := make([]BankProvider, 0, len(r.banks))
 	for provider := range r.banks {
 		providers = append(providers, provider)
 	}
@@ -128,3 +127,4 @@ func (r *BankRegistry) Close(ctx context.Context) error {
 	}
 	return nil
 }
+

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"ticket-system/internal/services/bank"
 	"ticket-system/internal/status"
 	"ticket-system/utils"
 	"time"
@@ -26,22 +27,22 @@ type PaymentService struct {
 	Redis      *redis.Client
 	PubNub     *pubnub.PubNub
 	queue      *QueueService
-	payment    Payment
+	banks      *bank.BankRegistry
 	seat       *SeatService
 	logger     *slog.Logger
 	maxRetries int
 	retryDelay time.Duration
 }
 
-func NewPaymentService(redisClient *redis.Client, pn *pubnub.PubNub, queueService *QueueService, payment Payment, seat *SeatService) *PaymentService {
-	if payment == nil {
+func NewPaymentService(redisClient *redis.Client, pn *pubnub.PubNub, queueService *QueueService, banks *bank.BankRegistry, seat *SeatService) *PaymentService {
+	if banks == nil {
 		panic("jdb instance must not be nil")
 	}
 	service := &PaymentService{
 		Redis:      redisClient,
 		PubNub:     pn,
 		queue:      queueService,
-		payment:    payment,
+		banks:      banks,
 		seat:       seat,
 		logger:     slog.Default(),
 		maxRetries: 3,
@@ -124,18 +125,32 @@ type GenJdbQrRequest struct {
 }
 
 func (s *PaymentService) GenQR(ctx context.Context, params GenJdbQrRequest) (string, error) {
-	refID, _ := utils.GenerateCode(4)
+	// refID, _ := utils.GenerateCode(4)
 
-	f := &status.FormQR{
-		Phone:          params.Phone,
-		ReferenceLabel: fmt.Sprintf("%s-%s", params.BookID, refID),
-		TerminalLabel:  refID,
-		UUID:           params.PaymentID,
-		Amount:         params.Amount,
-		MerchantID:     "",
+	// f := &status.FormQR{
+	// 	Phone:          params.Phone,
+	// 	ReferenceLabel: fmt.Sprintf("%s-%s", params.BookID, refID),
+	// 	TerminalLabel:  refID,
+	// 	UUID:           params.PaymentID,
+	// 	Amount:         params.Amount,
+	// 	MerchantID:     "",
+	// }
+
+	// 7. Generate QR code using specific bank
+	paymentReq := &bank.PaymentRequest{
+		Amount:          decimal.NewFromFloat(100000), // 100,000 LAK
+		Currency:        "LAK",
+		UUID:            "payment-123",
+		ReferenceNumber: "ref-456",
+		Phone:           "8562012345678",
 	}
 
-	envCode, err := s.payment.GenQRCode(ctx, f)
+	jdbInstance, err := s.banks.GetBank(bank.BankJDB)
+	if err != nil {
+		return "", err
+	}
+
+	envCode, err := jdbInstance.GenerateQR(ctx, paymentReq)
 	if err != nil {
 		return "", err
 	}
@@ -155,7 +170,7 @@ type PaymentData struct {
 
 // SubscribeToPaymentNotifications starts listening for payment notifications
 func (s *PaymentService) SubscribeToPaymentNotifications2() {
-	if s.payment == nil {
+	if s.banks == nil {
 		s.logger.Error("payment service is nil, cannot subscribe to notifications")
 		return
 	}
@@ -171,7 +186,7 @@ func (s *PaymentService) SubscribeToPaymentNotifications2() {
 		}()
 
 		txChannel := make(chan *status.Transaction, 10) // Buffered channel
-		s.payment.SetTranChannel(txChannel)
+		// s.banks.SetTranChannel(txChannel)
 
 		s.logger.Info("payment notification subscription started")
 

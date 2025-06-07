@@ -39,8 +39,8 @@ type Config struct {
 	// Monitoring
 	EnableMetrics bool
 	MetricsPort   string
-	JDBConfig     jdb.Config
-	LDBConfig     ldb.Config
+	JDBConfig     *jdb.Config
+	LDBConfig     *ldb.Config
 }
 
 // GetEnv GetEnv func for load config from .env file.
@@ -73,8 +73,22 @@ func LoadConfig() *Config {
 		HMACKey:     os.Getenv("JDB_HMAC_KEY"),
 	}
 
+	ldbCfg := ldb.Config{
+		BaseURL:        os.Getenv("LDB_BASE_URL"),
+		AccessTokenURL: os.Getenv("LDB_ACCESS_TOKEN_URL"),
+		ClientID:       os.Getenv("LDB_CLIENT_ID"),
+		ClientSecret:   os.Getenv("LDB_CLIENT_SECRET"),
+		MerchantID:     os.Getenv("LDB_MERCHANT_ID"),
+		PromotionCode:  os.Getenv("LDB_PROMOTION_CODE"),
+		PartnerID:      os.Getenv("LDB_PARTNER_ID"),
+		KeyID:          os.Getenv("LDB_KEY_ID"),
+		HMacKey:        os.Getenv("LDB_HMAC_KEY"),
+		SwitchBackURL:  os.Getenv("LDB_SWITCH_BACK_URL"),
+	}
+
 	return &Config{
-		JDBConfig: jdbCfg,
+		JDBConfig: &jdbCfg,
+		LDBConfig: &ldbCfg,
 		// Server
 		Port:        getEnv("PORT", "8090"),
 		Environment: getEnv("ENVIRONMENT", "development"),

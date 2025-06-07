@@ -12,7 +12,7 @@ import (
 	"ticket-system/config"
 	"ticket-system/internal/handlers"
 	"ticket-system/internal/services"
-	"ticket-system/internal/services/bank/jdb"
+	"ticket-system/internal/services/bank"
 	"ticket-system/models"
 	"ticket-system/utils"
 	"time"
@@ -42,18 +42,24 @@ func Start() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	payment, err := jdb.New(ctx, &cfg.JDBConfig)
-	if err != nil {
-		return err
-	}
-	// ldb, err := ldb.New(ctx, &cfg.LDBConfig)
-	// if err != nil {
-	// 	return fmt.Errorf("ldb.New(): %w", err)
+	factory := bank.NewFactory()
+	registry := bank.NewBankRegistry(factory)
+
+	// if err := registry.RegisterBank(ctx, services.BankJDB, cfg.JDBConfig); err != nil {
+	// 	return fmt.Errorf("failed to register JDB bank: %w", err)
 	// }
+
+	if err := registry.RegisterBank(ctx, bank.BankLDB, cfg.LDBConfig); err != nil {
+		return fmt.Errorf("failed to register LDB bank: %w", err)
+	}
+
+	if err := registry.SetPrimaryBank(bank.BankLDB); err != nil {
+		return fmt.Errorf("failed to set primary bank: %w", err)
+	}
 
 	queueService := services.NewQueueService(redisClient, pn, cfg)
 	seatService := services.NewSeatService(redisClient)
-	paymentService := services.NewPaymentService(redisClient, pn, queueService, payment, seatService)
+	paymentService := services.NewPaymentService(redisClient, pn, queueService, registry, seatService)
 
 	queueHandler := handlers.NewQueueHandler(app, queueService)
 	seatHandler := handlers.NewSeatHandler(app, seatService)

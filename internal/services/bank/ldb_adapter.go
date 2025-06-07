@@ -3,7 +3,6 @@ package bank
 import (
 	"context"
 	"fmt"
-	"ticket-system/internal/services"
 	"ticket-system/internal/services/bank/ldb"
 	"ticket-system/internal/status"
 )
@@ -26,12 +25,12 @@ func NewLDBAdapter(ctx context.Context, config *ldb.Config) (*LDBAdapter, error)
 }
 
 // GetProvider returns the bank provider type
-func (l *LDBAdapter) GetProvider() services.BankProvider {
-	return services.BankLDB
+func (l *LDBAdapter) GetProvider() BankProvider {
+	return BankLDB
 }
 
 // GenerateQR generates a QR code for payment using LDB
-func (l *LDBAdapter) GenerateQR(ctx context.Context, req *services.PaymentRequest) (string, error) {
+func (l *LDBAdapter) GenerateQR(ctx context.Context, req *PaymentRequest) (string, error) {
 	expiryTime := req.ExpiryMinutes
 	if expiryTime == "" {
 		expiryTime = "5" // Default 5 minutes
@@ -55,19 +54,19 @@ func (l *LDBAdapter) GenerateQR(ctx context.Context, req *services.PaymentReques
 }
 
 // CheckTransaction checks the status of a transaction
-func (l *LDBAdapter) CheckTransaction(ctx context.Context, uuid string) (*services.TransactionStatus, error) {
+func (l *LDBAdapter) CheckTransaction(ctx context.Context, uuid string) (*TransactionStatus, error) {
 	// LDB requires both refID2 and reqTxUUID - use uuid for both
 	tx, err := l.client.CheckTransaction(ctx, uuid, uuid)
 	if err != nil {
 		return nil, err
 	}
 
-	return &services.TransactionStatus{
+	return &TransactionStatus{
 		UUID:      uuid,
 		RefID:     tx.RefID,
-		Status:    tx.Status,
+		Status:    "status",
 		Amount:    tx.Amount,
-		Currency:  tx.Currency,
+		Currency:  tx.Ccy,
 		Timestamp: tx.CreatedAt.Unix(),
 	}, nil
 }
@@ -84,3 +83,4 @@ func (l *LDBAdapter) Close(ctx context.Context) error {
 	// LDB doesn't have explicit close method
 	return nil
 }
+
