@@ -36,7 +36,7 @@ type PaymentService struct {
 
 func NewPaymentService(redisClient *redis.Client, pn *pubnub.PubNub, queueService *QueueService, banks *bank.BankRegistry, seat *SeatService) *PaymentService {
 	if banks == nil {
-		panic("jdb instance must not be nil")
+		panic("banks instance must not be nil")
 	}
 	service := &PaymentService{
 		Redis:      redisClient,
@@ -117,40 +117,45 @@ func (s *PaymentService) CreatePaymentSession(ctx context.Context, userID, event
 	return paymentID, nil
 }
 
-type GenJdbQrRequest struct {
-	PaymentID string          `json:"payment_id"`
-	BookID    string          `json:"book_id"`
-	Phone     string          `json:"phone"`
-	Amount    decimal.Decimal `json:"amount"`
+type QRRequest struct {
+	PaymentID string            `json:"payment_id"`
+	BookID    string            `json:"book_id"`
+	Phone     string            `json:"phone"`
+	Amount    decimal.Decimal   `json:"amount"`
+	BankName  bank.BankProvider `json:"bank_name"`
 }
 
-func (s *PaymentService) GenQR(ctx context.Context, params GenJdbQrRequest) (string, error) {
-	// refID, _ := utils.GenerateCode(4)
+func (s *PaymentService) GenQR(ctx context.Context, params QRRequest) (string, error) {
+	refID, _ := utils.GenerateCode(4)
 
-	// f := &status.FormQR{
-	// 	Phone:          params.Phone,
-	// 	ReferenceLabel: fmt.Sprintf("%s-%s", params.BookID, refID),
-	// 	TerminalLabel:  refID,
-	// 	UUID:           params.PaymentID,
-	// 	Amount:         params.Amount,
-	// 	MerchantID:     "",
-	// }
-
-	// 7. Generate QR code using specific bank
+	// todo: fix this
 	paymentReq := &bank.PaymentRequest{
-		Amount:          decimal.NewFromFloat(100000), // 100,000 LAK
-		Currency:        "LAK",
-		UUID:            "payment-123",
-		ReferenceNumber: "ref-456",
-		Phone:           "8562012345678",
+		Phone:           params.Phone,
+		ReferenceNumber: fmt.Sprintf("%s-%s", params.BookID, refID),
+		TerminalLabel:   refID,
+		UUID:            params.PaymentID,
+		Amount:          params.Amount,
+		MerchantID:      "",
 	}
 
-	jdbInstance, err := s.banks.GetBank(bank.BankJDB)
+	var bankName bank.BankProvider
+	switch params.BankName {
+	case bank.BankJDB:
+		bankName = bank.BankJDB
+	case bank.BankLDB:
+		bankName = bank.BankLDB
+	case bank.BankBCEL:
+		bankName = bank.BankBCEL
+	default:
+		bankName = bank.BankJDB
+	}
+
+	bank, err := s.banks.GetBank(bankName)
 	if err != nil {
 		return "", err
 	}
 
-	envCode, err := jdbInstance.GenerateQR(ctx, paymentReq)
+	envCode, err := bank.GenerateQR(ctx, paymentReq)
 	if err != nil {
 		return "", err
 	}

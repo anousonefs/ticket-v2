@@ -130,14 +130,14 @@ func (h *PaymentHandler) SimulatePayment(e *core.RequestEvent) error {
 }
 
 func (h *PaymentHandler) GenQR(e *core.RequestEvent) error {
-	var req services.GenJdbQrRequest
+	var req services.QRRequest
 	if err := e.BindBody(&req); err != nil {
 		return apis.NewBadRequestError("Invalid request", err)
 	}
 	ctx := e.Request.Context()
 	code, err := h.paymentService.GenQR(ctx, req)
 	if err != nil {
-		slog.Error("h.paymentService.GenJdbQr()", "req", req, "error", err)
+		slog.Error("h.paymentService.GenQR()", "req", req, "error", err)
 		return apis.NewInternalServerError("internal error", err)
 	}
 	return e.JSON(http.StatusOK, map[string]any{"status": "success", "code": code})

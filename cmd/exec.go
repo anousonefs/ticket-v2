@@ -42,24 +42,24 @@ func Start() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	factory := bank.NewFactory()
-	registry := bank.NewBankRegistry(factory)
+	bankFactory := bank.NewFactory()
+	banks := bank.NewBankRegistry(bankFactory)
 
 	// if err := registry.RegisterBank(ctx, services.BankJDB, cfg.JDBConfig); err != nil {
 	// 	return fmt.Errorf("failed to register JDB bank: %w", err)
 	// }
 
-	if err := registry.RegisterBank(ctx, bank.BankLDB, cfg.LDBConfig); err != nil {
+	if err := banks.RegisterBank(ctx, bank.BankLDB, cfg.LDBConfig); err != nil {
 		return fmt.Errorf("failed to register LDB bank: %w", err)
 	}
 
-	if err := registry.SetPrimaryBank(bank.BankLDB); err != nil {
+	if err := banks.SetPrimaryBank(bank.BankLDB); err != nil {
 		return fmt.Errorf("failed to set primary bank: %w", err)
 	}
 
 	queueService := services.NewQueueService(redisClient, pn, cfg)
 	seatService := services.NewSeatService(redisClient)
-	paymentService := services.NewPaymentService(redisClient, pn, queueService, registry, seatService)
+	paymentService := services.NewPaymentService(redisClient, pn, queueService, banks, seatService)
 
 	queueHandler := handlers.NewQueueHandler(app, queueService)
 	seatHandler := handlers.NewSeatHandler(app, seatService)
@@ -97,7 +97,6 @@ func Start() error {
 		e.Router.POST("/api/v1/booking/confirm", bookingHandler.ConfirmBooking)
 		e.Router.GET("/api/v1/booking/history", bookingHandler.GetBookingHistory)
 
-		// jdb
 		e.Router.POST("/api/v1/payment/gen-qr", paymentHandler.GenQR)
 
 		// Payment endpoints
