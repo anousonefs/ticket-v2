@@ -92,7 +92,7 @@ func Start() error {
 		e.Router.GET("/api/v1/booking/history", bookingHandler.GetBookingHistory)
 
 		// jdb
-		e.Router.POST("/api/v1/payment/gen-jdb-qr", paymentHandler.GenJdbQr)
+		e.Router.POST("/api/v1/payment/gen-qr", paymentHandler.GenQR)
 
 		// Payment endpoints
 		e.Router.GET("/api/v1/payment/{paymentId}", paymentHandler.GetPaymentDetails)

@@ -123,7 +123,7 @@ type GenJdbQrRequest struct {
 	Amount    decimal.Decimal `json:"amount"`
 }
 
-func (s *PaymentService) GenJdbQr(ctx context.Context, params GenJdbQrRequest) (string, error) {
+func (s *PaymentService) GenQR(ctx context.Context, params GenJdbQrRequest) (string, error) {
 	refID, _ := utils.GenerateCode(4)
 
 	f := &status.FormQR{

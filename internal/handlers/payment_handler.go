@@ -129,13 +129,13 @@ func (h *PaymentHandler) SimulatePayment(e *core.RequestEvent) error {
 	return e.JSON(http.StatusOK, map[string]any{"message": "Payment simulation sent"})
 }
 
-func (h *PaymentHandler) GenJdbQr(e *core.RequestEvent) error {
+func (h *PaymentHandler) GenQR(e *core.RequestEvent) error {
 	var req services.GenJdbQrRequest
 	if err := e.BindBody(&req); err != nil {
 		return apis.NewBadRequestError("Invalid request", err)
 	}
 	ctx := e.Request.Context()
-	code, err := h.paymentService.GenJdbQr(ctx, req)
+	code, err := h.paymentService.GenQR(ctx, req)
 	if err != nil {
 		slog.Error("h.paymentService.GenJdbQr()", "req", req, "error", err)
 		return apis.NewInternalServerError("internal error", err)
