@@ -27,15 +27,11 @@ import (
 
 func Start() error {
 	app := pocketbase.New()
-
-	// Load configuration
 	cfg := config.LoadConfig()
 
-	// Initialize Redis
 	redisClient := utils.NewRedisClient(cfg.RedisURL)
 	defer redisClient.Close()
 
-	// Initialize PubNub
 	pnConfig := pubnub.NewConfig()
 	pnConfig.PublishKey = cfg.PubNubPublishKey
 	pnConfig.SubscribeKey = cfg.PubNubSubscribeKey
@@ -46,33 +42,34 @@ func Start() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	jdbInstance, err := jdb.New(ctx, &cfg.JDBConfig)
-	if err != nil {
-		return err
-	}
+	// jdbInstance, err := jdb.New(ctx, &cfg.JDBConfig)
+	// if err != nil {
+	// 	return err
+	// }
+	// ldb, err := ldb.New(ctx, &cfg.LDBConfig)
+	// if err != nil {
+	// 	return fmt.Errorf("ldb.New(): %w", err)
+	// }
 
-	// Initialize services
+	jdbInitial := jdb.Yespay{}
+
 	queueService := services.NewQueueService(redisClient, pn, cfg)
 	seatService := services.NewSeatService(redisClient)
-	paymentService := services.NewPaymentService(redisClient, pn, queueService, jdbInstance, seatService)
+	paymentService := services.NewPaymentService(redisClient, pn, queueService, &jdbInitial, seatService)
 
-	// Initialize handlers
 	queueHandler := handlers.NewQueueHandler(app, queueService)
 	seatHandler := handlers.NewSeatHandler(app, seatService)
 	bookingHandler := handlers.NewBookingHandler(app, seatService, paymentService)
 	paymentHandler := handlers.NewPaymentHandler(app, paymentService)
 	adminHandler := handlers.NewAdminHandler(app, queueService, redisClient)
 
-	// Enable migrations
 	migratecmd.MustRegister(app, app.RootCmd, migratecmd.Config{
 		Automigrate: true,
 	})
 
-	// Start background tasks
 	go queueService.UpdateQueuePositions2(ctx)
 	go queueService.CleanupInactiveQueues(ctx)
 
-	// Setup graceful shutdown
 	go handleShutdown(cancel)
 
 	app.OnServe().BindFunc(func(e *core.ServeEvent) error {
@@ -109,6 +106,7 @@ func Start() error {
 		e.Router.GET("/api/v1/admin/queue-details", adminHandler.GetQueueDetails)
 		e.Router.POST("/api/v1/admin/force-process-queue", adminHandler.ForceProcessQueue)
 		e.Router.POST("/api/v1/admin/remove-from-queue", adminHandler.RemoveFromQueue)
+		e.Router.POST("/api/v1/admin/test-ctx", adminHandler.Testctx)
 
 		// Test endpoint for payment simulation
 		if cfg.Environment == "development" {

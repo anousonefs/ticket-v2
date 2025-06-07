@@ -4,6 +4,7 @@ import (
 	"os"
 	"strconv"
 	"ticket-system/internal/services/bank/jdb"
+	"ticket-system/internal/services/bank/ldb"
 	"time"
 )
 
@@ -39,6 +40,7 @@ type Config struct {
 	EnableMetrics bool
 	MetricsPort   string
 	JDBConfig     jdb.Config
+	LDBConfig     ldb.Config
 }
 
 // GetEnv GetEnv func for load config from .env file.

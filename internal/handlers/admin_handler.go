@@ -169,3 +169,23 @@ func (h *AdminHandler) RemoveFromQueue(e *core.RequestEvent) error {
 
 	return e.JSON(http.StatusOK, map[string]any{"message": "User removed from queue"})
 }
+
+func (h *AdminHandler) Testctx(e *core.RequestEvent) error {
+	ctx := context.Background()
+	go testCal(ctx)
+	return e.JSON(http.StatusOK, map[string]any{"message": "Context test started"})
+}
+
+func testCal(ctx context.Context) {
+	println("starting calculation")
+
+	select {
+	case <-ctx.Done():
+		println("context cancelled:", ctx.Err())
+		return
+	case <-time.After(2 * time.Second):
+		println("calculation completed normally")
+	}
+
+	println("done")
+}
