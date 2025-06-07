@@ -1,7 +1,10 @@
 package handlers
 
 import (
+	"bytes"
 	"fmt"
+	"io"
+	"log"
 	"log/slog"
 	"net/http"
 	"ticket-system/internal/services"
@@ -9,6 +12,7 @@ import (
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/apis"
 	"github.com/pocketbase/pocketbase/core"
+	"github.com/shopspring/decimal"
 )
 
 type PaymentHandler struct {
@@ -141,4 +145,49 @@ func (h *PaymentHandler) GenQR(e *core.RequestEvent) error {
 		return apis.NewInternalServerError("internal error", err)
 	}
 	return e.JSON(http.StatusOK, map[string]any{"status": "success", "code": code})
+}
+
+type LDBHookReq struct {
+	NotifyID int64           `json:"notifyId"`
+	Status   string          `json:"processingStatus"`
+	UUID     string          `json:"partnerOrderID"`
+	RefID2   string          `json:"partnerPaymentID"`
+	Bank     string          `json:"paymentBank"`
+	Time     string          `json:"paymentAt"`
+	TxID     string          `json:"paymentReference"`
+	Amount   decimal.Decimal `json:"amount"`
+	Ccy      string          `json:"currency"`
+}
+
+func (h *PaymentHandler) LDBConfirmationPayment(e *core.RequestEvent) error {
+	r := e.Request
+	rClone := r.Clone(r.Context())
+
+	var b bytes.Buffer
+	b.ReadFrom(r.Body)
+	r.Body = io.NopCloser(&b)
+
+	// Update cloned request body
+	rClone.Body = io.NopCloser(bytes.NewReader(b.Bytes()))
+
+	// Read cloned request body
+	rBody, _ := io.ReadAll(rClone.Body)
+	slog.Info("=> LDBConfirmationPayment", "read Body", rBody)
+
+	var req LDBHookReq
+	if err := e.BindBody(&req); err != nil {
+		return e.JSON(http.StatusBadRequest, "bad request")
+	}
+	fmt.Printf("req: %+v\n", req)
+
+	if req.UUID == "" || req.TxID == "" || req.Status != "FNLD" {
+		log.Printf("LDBConfirmationPayment: req.UUID: %s, req.TxID: %s, req.Status: %s", req.UUID, req.TxID, req.Status)
+		return e.JSON(http.StatusBadRequest, "invalid hook request body")
+	}
+
+	return e.JSON(http.StatusOK, map[string]any{
+		"code":    200,
+		"status":  "OK",
+		"message": "LDB Confirmation payment successful.",
+	})
 }

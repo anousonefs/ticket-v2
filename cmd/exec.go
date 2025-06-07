@@ -98,6 +98,7 @@ func Start() error {
 		e.Router.GET("/api/v1/booking/history", bookingHandler.GetBookingHistory)
 
 		e.Router.POST("/api/v1/payment/gen-qr", paymentHandler.GenQR)
+		e.Router.POST("/api/payment-notify/v1/hook", paymentHandler.LDBConfirmationPayment)
 
 		// Payment endpoints
 		e.Router.GET("/api/v1/payment/{paymentId}", paymentHandler.GetPaymentDetails)
