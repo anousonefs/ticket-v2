@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"ticket-system/internal/services/bank/jdb"
+	"ticket-system/internal/status"
 	"ticket-system/utils"
 	"time"
 
@@ -17,26 +17,31 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+type Payment interface {
+	GenQRCode(ctx context.Context, param *status.FormQR) (string, error)
+	SetTranChannel(ch chan *status.Transaction)
+}
+
 type PaymentService struct {
 	Redis      *redis.Client
 	PubNub     *pubnub.PubNub
 	queue      *QueueService
-	payment    *jdb.Yespay
+	payment    Payment
 	seat       *SeatService
 	logger     *slog.Logger
 	maxRetries int
 	retryDelay time.Duration
 }
 
-func NewPaymentService(redisClient *redis.Client, pn *pubnub.PubNub, queueService *QueueService, jdbInstance *jdb.Yespay, seat *SeatService) *PaymentService {
-	if jdbInstance == nil {
+func NewPaymentService(redisClient *redis.Client, pn *pubnub.PubNub, queueService *QueueService, payment Payment, seat *SeatService) *PaymentService {
+	if payment == nil {
 		panic("jdb instance must not be nil")
 	}
 	service := &PaymentService{
 		Redis:      redisClient,
 		PubNub:     pn,
 		queue:      queueService,
-		payment:    jdbInstance,
+		payment:    payment,
 		seat:       seat,
 		logger:     slog.Default(),
 		maxRetries: 3,
@@ -121,7 +126,7 @@ type GenJdbQrRequest struct {
 func (s *PaymentService) GenJdbQr(ctx context.Context, params GenJdbQrRequest) (string, error) {
 	refID, _ := utils.GenerateCode(4)
 
-	f := &jdb.FormQR{
+	f := &status.FormQR{
 		Phone:          params.Phone,
 		ReferenceLabel: fmt.Sprintf("%s-%s", params.BookID, refID),
 		TerminalLabel:  refID,
@@ -165,7 +170,7 @@ func (s *PaymentService) SubscribeToPaymentNotifications2() {
 			}
 		}()
 
-		txChannel := make(chan *jdb.Transaction, 10) // Buffered channel
+		txChannel := make(chan *status.Transaction, 10) // Buffered channel
 		s.payment.SetTranChannel(txChannel)
 
 		s.logger.Info("payment notification subscription started")
@@ -195,7 +200,7 @@ func (s *PaymentService) SubscribeToPaymentNotifications2() {
 }
 
 // handlePaymentNotificationSafely wraps the notification handler with error recovery
-func (s *PaymentService) handlePaymentNotificationSafely(transaction *jdb.Transaction) {
+func (s *PaymentService) handlePaymentNotificationSafely(transaction *status.Transaction) {
 	defer func() {
 		if r := recover(); r != nil {
 			s.logger.Error("payment notification handler panic recovered",
@@ -220,7 +225,7 @@ func (s *PaymentService) handlePaymentNotificationSafely(transaction *jdb.Transa
 }
 
 // handlePaymentNotification processes the payment notification
-func (s *PaymentService) handlePaymentNotification2(ctx context.Context, transaction *jdb.Transaction) error {
+func (s *PaymentService) handlePaymentNotification2(ctx context.Context, transaction *status.Transaction) error {
 	// Validate input
 	if transaction == nil || transaction.UUID == "" {
 		return fmt.Errorf("invalid transaction data")

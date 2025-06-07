@@ -10,9 +10,8 @@ import (
 	"net/http"
 	"net/url"
 	"sync"
+	"ticket-system/internal/status"
 	"time"
-
-	"github.com/shopspring/decimal"
 )
 
 type ClientConfig struct {
@@ -182,17 +181,17 @@ func (c *Client) connect(ctx context.Context) (string, error) {
 	return accessToken, nil
 }
 
-type FormQR struct {
-	UUID           string
-	Phone          string
-	MerchantID     string
-	ReferenceLabel string
-	TerminalLabel  string
-	Amount         decimal.Decimal
-}
+// type FormQR struct {
+// 	UUID           string
+// 	Phone          string
+// 	MerchantID     string
+// 	ReferenceLabel string
+// 	TerminalLabel  string
+// 	Amount         decimal.Decimal
+// }
 
 // getQRCodeFromJDB get from JDB backend api
-func (c *Client) getQRFromJDB(ctx context.Context, f *FormQR) (string, error) {
+func (c *Client) getQRFromJDB(ctx context.Context, f *status.FormQR) (string, error) {
 	number, err := randomNumber()
 	if err != nil {
 		return "", fmt.Errorf("getQRFromJDB: randomNumber: %v", err)
@@ -243,10 +242,10 @@ func (c *Client) getQRFromJDB(ctx context.Context, f *FormQR) (string, error) {
 }
 
 // checkTransaction check transaction status from JDB api
-func (c *Client) checkTransaction(ctx context.Context, uuid string) (*Transaction, error) {
+func (c *Client) checkTransaction(ctx context.Context, uuid string) (*status.Transaction, error) {
 	number, err := randomNumber()
 	if err != nil {
-		return &Transaction{}, fmt.Errorf("checkTransactionJDB: randomNumber: %v", err)
+		return &status.Transaction{}, fmt.Errorf("checkTransactionJDB: randomNumber: %v", err)
 	}
 
 	body := fmt.Sprintf(`{"requestId":%q,"billNumber":%q}`, number, uuid)
@@ -255,7 +254,7 @@ func (c *Client) checkTransaction(ctx context.Context, uuid string) (*Transactio
 	_baseURL, _ := url.Parse(c.baseURL)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("%s%s", _baseURL.String(), "/api/pro/dynamic/checkTransaction"), bodyReader)
 	if err != nil {
-		return &Transaction{}, fmt.Errorf("checkTransactionJDB: http.NewReq: %v", err)
+		return &status.Transaction{}, fmt.Errorf("checkTransactionJDB: http.NewReq: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("SignedHash", Hmac256([]byte(body), []byte(c.hmacKey)))
@@ -263,7 +262,7 @@ func (c *Client) checkTransaction(ctx context.Context, uuid string) (*Transactio
 
 	resp, err := c.hc.Do(req)
 	if err != nil {
-		return &Transaction{}, fmt.Errorf("checkTransactionJDB: http.Do: %v", err)
+		return &status.Transaction{}, fmt.Errorf("checkTransactionJDB: http.Do: %v", err)
 	}
 	defer resp.Body.Close()
 
@@ -282,18 +281,18 @@ func (c *Client) checkTransaction(ctx context.Context, uuid string) (*Transactio
 	}
 	dec := json.NewDecoder(resp.Body)
 	if err := dec.Decode(&reply); err != nil {
-		return &Transaction{}, fmt.Errorf("checkTransactionJDB: json.Decode: %v", err)
+		return &status.Transaction{}, fmt.Errorf("checkTransactionJDB: json.Decode: %v", err)
 	}
 	if reply.Status != "OK" {
 		if reply.Status == "NOT_FOUND" {
-			return &Transaction{}, errors.New("payment failed")
+			return &status.Transaction{}, errors.New("payment failed")
 		}
-		return &Transaction{}, fmt.Errorf("checkTransactionJDB: reply.Status: %v, reply.Message: %v", reply.Status, reply.Message)
+		return &status.Transaction{}, fmt.Errorf("checkTransactionJDB: reply.Status: %v, reply.Message: %v", reply.Status, reply.Message)
 	}
 
 	transaction, err := reply.Data.payload.ToDomain()
 	if err != nil {
-		return &Transaction{}, fmt.Errorf("checkTransactionJDB: reply.Data: %v", err)
+		return &status.Transaction{}, fmt.Errorf("checkTransactionJDB: reply.Data: %v", err)
 	}
 
 	return transaction, nil

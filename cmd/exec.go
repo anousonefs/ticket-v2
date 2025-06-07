@@ -42,20 +42,18 @@ func Start() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// jdbInstance, err := jdb.New(ctx, &cfg.JDBConfig)
-	// if err != nil {
-	// 	return err
-	// }
+	payment, err := jdb.New(ctx, &cfg.JDBConfig)
+	if err != nil {
+		return err
+	}
 	// ldb, err := ldb.New(ctx, &cfg.LDBConfig)
 	// if err != nil {
 	// 	return fmt.Errorf("ldb.New(): %w", err)
 	// }
 
-	jdbInitial := jdb.Yespay{}
-
 	queueService := services.NewQueueService(redisClient, pn, cfg)
 	seatService := services.NewSeatService(redisClient)
-	paymentService := services.NewPaymentService(redisClient, pn, queueService, &jdbInitial, seatService)
+	paymentService := services.NewPaymentService(redisClient, pn, queueService, payment, seatService)
 
 	queueHandler := handlers.NewQueueHandler(app, queueService)
 	seatHandler := handlers.NewSeatHandler(app, seatService)

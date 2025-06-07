@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"ticket-system/internal/status"
 	"time"
 
 	pubnub "github.com/pubnub/go/v7"
@@ -72,17 +73,6 @@ type (
 		Amount        decimal.Decimal `json:"txnAmount"`
 		CreatedAt     string          `json:"txnDateTime"`
 	}
-
-	Transaction struct {
-		RefID         string
-		UUID          string
-		FCCRef        string
-		Ccy           string
-		Payer         string
-		AccountNumber string
-		Amount        decimal.Decimal
-		CreatedAt     time.Time
-	}
 )
 
 // New returns a new YesPay instance.
@@ -147,7 +137,7 @@ func New(ctx context.Context, cfg *Config) (*Yespay, error) {
 type subscribe struct {
 	pn  *pubnub.PubNub
 	lis *pubnub.Listener
-	ch  chan *Transaction
+	ch  chan *status.Transaction
 }
 
 func (y *Yespay) newSubscription(ctx context.Context, pnCfg *pubnub.Config) (*subscribe, error) {
@@ -234,13 +224,13 @@ func (s *subscribe) processSubscription(ctx context.Context) error {
 	}
 }
 
-func (p *payload) ToDomain() (*Transaction, error) {
+func (p *payload) ToDomain() (*status.Transaction, error) {
 	ts, err := time.ParseInLocation("2006-01-02 15:04:05", p.CreatedAt, time.Local)
 	if err != nil {
 		return nil, err
 	}
 
-	return &Transaction{
+	return &status.Transaction{
 		RefID:         p.RefID,
 		UUID:          p.UUID,
 		FCCRef:        p.FCCRef,
@@ -267,15 +257,15 @@ func (y *Yespay) Unsubscribe(ctx context.Context, uuid string) {
 	y.sub.pn.Unsubscribe().Channels([]string{fmt.Sprintf("%s_%s", y.MerchantID, uuid)}).Execute()
 }
 
-func (y *Yespay) SetTranChannel(ch chan *Transaction) {
+func (y *Yespay) SetTranChannel(ch chan *status.Transaction) {
 	y.sub.ch = ch
 }
 
-func (y *Yespay) CheckTransaction(ctx context.Context, uuid string) (*Transaction, error) {
+func (y *Yespay) CheckTransaction(ctx context.Context, uuid string) (*status.Transaction, error) {
 	return y.client.checkTransaction(ctx, uuid)
 }
 
-func (y *Yespay) GenQRCode(ctx context.Context, f *FormQR) (string, error) {
+func (y *Yespay) GenQRCode(ctx context.Context, f *status.FormQR) (string, error) {
 	if f.MerchantID == "" {
 		f.MerchantID = y.MerchantID
 	}
